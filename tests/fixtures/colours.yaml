@@ -1,0 +1,13 @@
+vocabulary: [RED, BLK, YEL, BLU, GRN, WHT, ORG, PUR, GRY, BRN]
+classes:
+  - {match: '^12V', colours: [YEL]}
+  - {match: '^GND$', colours: [BLK, BLU]}
+  - {match: '^3V3$', colours: [RED]}
+  - {match: '^5V$', colours: [ORG]}
+
+# Rail strip tints on the build sheet. Merged over the built-in
+# 3V3/GND/5V defaults; add your own rail names here.
+rail_tints:
+  '3V3': '#d62728'
+  'GND': '#444444'
+  '5V': '#ff8c00'

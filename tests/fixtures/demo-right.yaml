@@ -1,0 +1,16 @@
+# Fixture island B — half-400, unsplit rails. Panel partner to demo-left.
+island: demo-right
+schema_version: 1
+board: half-400
+rails: {top+: 3V3, top-: GND}
+rails_bridged: false
+parts:
+  - ref: U2
+    part: dip8-demo
+    value: Demo octal
+    pin1: 8c
+    seeds: {'1': 3V3, '8': GND}
+passives:
+  - {ref: R2, kind: resistor, value: 4k7, from: 20a, to: 'rail:top+'}
+leads:
+  - {at: 25a, colour: BLK, net: GND, label: bench GND}

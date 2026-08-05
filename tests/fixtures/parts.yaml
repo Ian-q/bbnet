@@ -1,0 +1,16 @@
+# bbnet fixture footprint library — synthetic, ships with the engine.
+dip8-demo:
+  kind: dip
+  pins: ['1', '2', '3', '4', '5', '6', '7', '8']
+
+sil4-header:
+  kind: sil
+  pins: [VCC, GND, TX, RX]
+
+mcu-demo:
+  # 12-pin DIP on a 0.6" pin-row span — exercises col_at_span and the
+  # two-column-left / three-column-right asymmetry a mirror cannot express.
+  kind: dip
+  span: 6
+  pins: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12']
+  pin_signals: pinmap:demo-mcu

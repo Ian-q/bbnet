@@ -1,0 +1,7 @@
+panels:
+  - name: Demo pair
+    islands: [demo-left, demo-right]
+    seam: 90
+    note: fixture panel — exercises seam stitching and cross-board kitting
+
+title: Demo pair — bbnet fixture build sheet

@@ -1,0 +1,32 @@
+# Fixture island A — full-830 with split rails and ravine mounting-hole
+# keep-outs. Carries the DIP-with-span part, both rail pairs, passives of
+# three kinds, an underside jumper, an off-board lead, and the panel
+# interlink to demo-right.
+island: demo-left
+schema_version: 1
+board: full-830
+rails: {top+: 3V3, top-: GND, bot+: 5V, bot-: GND}
+rails_bridged: true
+parts:
+  - ref: U1
+    part: mcu-demo
+    value: Demo MCU
+    pin1: 10d
+    seeds: {'1': 5V, '2': GND}
+  - ref: J1
+    part: sil4-header
+    value: Serial header
+    pin1: 40a
+    seeds: {VCC: 3V3, GND: GND}
+passives:
+  - {ref: R1, kind: resistor, value: 10k, from: 10a, to: 'rail:top+'}
+  - {ref: C1, kind: ceramic, value: 100n, from: 12a, to: 'rail:top-'}
+  - {ref: C2, kind: electrolytic, value: 47u, rating: 25V, from: 'rail:bot+', to: 'rail:bot-'}
+jumpers:
+  - {from: 40e, to: 'rail:top+', colour: RED}
+  - {from: 41e, to: 'rail:top-', colour: BLK}
+  - {from: 20a, to: 24a, colour: GRN, underside: true, note: underside run}
+leads:
+  - {at: 50a, colour: YEL, net: 12V, label: 12V input}
+interlinks:
+  - {from: 15j, to: 'demo-right:15a', colour: GRN, note: cross-board signal}

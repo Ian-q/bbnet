@@ -1,0 +1,17 @@
+ties: []
+domains:
+  - {match: '^5V$', domain: analog}
+passive_min_span: {resistor: 2.2, ceramic: 1.4}
+passive_span_waivers: []
+pins: {}
+# Net-name -> nominal working voltage, for B10 (cap polarity) and B11
+# (voltage rating). Omit to use the built-in 3V3/5V/12V/GND table; set it
+# when your board runs on anything else, or those two rules will find
+# nothing while still reporting a clean run. The override is WHOLESALE,
+# not merged: declaring only a 48V entry here drops GND from the table
+# too, which silently disables B11 for every grounded part.
+net_voltages:
+  - {match: '^GND$', volts: 0.0}
+  - {match: '^3V3', volts: 3.3}
+  - {match: '^5V', volts: 5.0}
+  - {match: '^12V', volts: 12.0}
