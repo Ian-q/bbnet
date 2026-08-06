@@ -202,6 +202,45 @@ deliberately two-ended, because every geometry rule it feeds is about two
 legs and a body between them — a three-legged part has no such single
 axis. Multi-terminal results live in `design.device_nids`.
 
+## Build levels
+
+A populated breadboard runs out of surface long before it runs out of
+nets. The classic escape is the underside, but that makes reasoning
+*worse* — wires then run in both directions across two faces and every
+build-sheet reading starts with "which face am I looking at". The other
+direction is **up**.
+
+Every placed part carries a `level:`. Level `0` is the board surface,
+`-1` is the underside, and `1, 2, …` are above it. `side: top|bottom` is
+the same axis at coarser resolution and keeps working; given both, they
+must agree.
+
+A **riser** is a stacking pin soldered into a hole — male into the board,
+female socket on top — that makes a level reachable at that one hole:
+
+```yaml
+risers:
+  - {at: 20a, level: 1}
+  - {at: 24c, level: 1, note: SPI spine takeoff}
+```
+
+Two invariants make this cheap:
+
+**Risers add no nets.** A riser is electrically the same node as its
+hole, because `HoleAddr.node_key()` is `(row, half)` and knows nothing
+about height. So the riser bin never appears in the netlist — what a
+riser provides is a *mechanical* fact (this level is reachable here),
+which the DRC needs and derivation does not.
+
+**A lifted body stops competing for surface channel.** A resistor lying
+on the board claims cells the autorouter must route around; the same
+resistor on risers at level 1 claims none of them. That is the entire
+point of building upward, and it falls straight out of filing each
+body's footprint under its own level.
+
+The riser's *pin* still occupies its hole for B1 purposes — the socket is
+above the board, but the pin is in it.
+
 ## Configuration semantics
 
 Three deliberately different answers live in this engine, and a

@@ -428,3 +428,76 @@ def test_terminal_groups_yields_passives_and_devices_uniformly():
                    "from": "30a", "to": "31a"}]), {})
     groups = {p.ref: len(ts) for p, ts in isl.terminal_groups()}
     assert groups == {"R1": 2, "Q1": 3}
+
+
+# ------------------------------------------------------- levels + risers
+
+def test_side_bottom_is_level_minus_one():
+    """`side` and `level` are the same axis at different resolutions, so
+    every island YAML written before levels existed keeps its meaning."""
+    isl = island_from(_dev_island(passives=[
+        {"ref": "C1", "kind": "ceramic", "value": "100n",
+         "from": "20a", "to": "21a", "side": "bottom"}]), {})
+    assert isl.passives[0].level == -1
+    assert isl.passives[0].side == "bottom"
+
+
+def test_level_defaults_to_the_board_surface():
+    isl = island_from(_dev_island(passives=[
+        {"ref": "R1", "kind": "resistor", "value": "1k",
+         "from": "20a", "to": "21a"}]), {})
+    assert isl.passives[0].level == 0 and isl.passives[0].side == "top"
+
+
+def test_explicit_level_sets_side_for_free():
+    isl = island_from(_dev_island(devices=[
+        dict(FET, level=2)]), {})
+    assert isl.devices[0].level == 2 and isl.devices[0].side == "top"
+
+
+def test_side_and_level_must_agree():
+    """`side: bottom` at `level: 2` is not a thing that can be built.
+    Silently preferring one would bury the contradiction in whichever
+    field the reader did not happen to look at."""
+    with pytest.raises(ModelError, match="disagree"):
+        island_from(_dev_island(passives=[
+            {"ref": "R1", "kind": "resistor", "value": "1k",
+             "from": "20a", "to": "21a",
+             "side": "bottom", "level": 2}]), {})
+
+
+def test_level_must_be_an_integer():
+    with pytest.raises(ModelError, match="must be an integer"):
+        island_from(_dev_island(devices=[dict(FET, level="high")]), {})
+
+
+def test_riser_adds_no_net():
+    """The load-bearing invariant of the whole levels design. A riser is
+    electrically the same node as its hole, so putting one down must not
+    change the netlist by even one net."""
+    base = _dev_island(jumpers=[
+        {"from": "20a", "to": "21a", "colour": "GRN"}])
+    before = _derive(base)
+    after = _derive(dict(base, risers=[{"at": "20a", "level": 1}]))
+    assert len(after.nets) == len(before.nets)
+    assert ({n.name for n in after.nets} == {n.name for n in before.nets})
+
+
+def test_riser_sockets_report_reachable_levels():
+    isl = island_from(_dev_island(risers=[
+        {"at": "20a", "level": 1},
+        {"at": "20a", "level": 2},
+        {"at": "24c", "level": 1}]), {})
+    assert isl.sockets() == {(20, "L", "a"): {1, 2}, (24, "L", "c"): {1}}
+
+
+def test_riser_must_name_a_hole_not_a_half_row():
+    """A riser is soldered into ONE hole; `20L` names a node, not a
+    hole, so it cannot say where the pin actually goes."""
+    with pytest.raises(ModelError, match="must name the hole"):
+        island_from(_dev_island(risers=[{"at": "20L", "level": 1}]), {})
+
+
+def test_riser_level_must_be_above_the_board():
+    with pytest.raises(ModelError, match="reach ABOVE"):
+        island_from(_dev_island(risers=[{"at": "20a", "level": 0}]), {})

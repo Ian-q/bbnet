@@ -51,6 +51,34 @@ DEVICE_PINOUTS = {
 }
 DEVICE_KINDS = frozenset(DEVICE_PINOUTS)
 
+# The board surface is level 0 and the underside is level -1, so the
+# older `side: top|bottom` is just a coarser spelling of `level`. Keeping
+# both spellings working matters: every island YAML written so far says
+# `side`, and underside mounting is still the right answer sometimes.
+SIDE_LEVELS = {"top": 0, "bottom": -1}
+
+
+def level_of(spec, where):
+    """Resolve `side:` and `level:` on one placed part to a single level.
+
+    Either spelling alone is fine. Given both, they must agree — a part
+    claiming `side: bottom` at `level: 2` is not a thing that can be
+    built, and silently preferring one would bury the contradiction in
+    whichever field the reader did not look at."""
+    side = spec.get("side", "top")
+    if side not in SIDE_LEVELS:
+        raise ModelError(f"{where}: side {side!r} not 'top' or 'bottom'")
+    if "level" not in spec or spec["level"] is None:
+        return side, SIDE_LEVELS[side]
+    level = spec["level"]
+    if not isinstance(level, int) or isinstance(level, bool):
+        raise ModelError(f"{where}: level {level!r} must be an integer")
+    if "side" in spec and SIDE_LEVELS[side] != level:
+        raise ModelError(
+            f"{where}: side {side!r} and level {level} disagree — "
+            f"side {side!r} means level {SIDE_LEVELS[side]}; drop one")
+    return ("bottom" if level < 0 else "top"), level
+
 
 # ---------------------------------------------------------------- parts lib
 
@@ -181,8 +209,31 @@ class Passive:
                          # two passives share crossing hole pairs
     rating: str = ""     # optional voltage rating ("25V") — B11 checks
                          # it against the net's working voltage
+    level: int = 0       # build level; 0 is the board surface and -1 is
+                         # the underside, so `side` is just a spelling of
+                         # this (see level_of)
     # polarity convention: for electrolytics, `a` (YAML `from:`) is the
     # + terminal — rendered as +/- on the build sheet, enforced by B10
+
+
+@dataclass
+class Riser:
+    """A stacking pin soldered into a hole, presenting a socket at
+    `level` above the board — the male-into-the-board, female-on-top
+    part that lets the build go upward instead of underneath.
+
+    A riser adds NO net. It is electrically the same node as the hole it
+    sits in, because `HoleAddr.node_key()` is (row, half) and knows
+    nothing about height. That invariant is what keeps levels cheap:
+    only link bars merge nodes, and the riser bin never appears in the
+    netlist at all. What a riser does is make a level *reachable* at one
+    specific hole, which is a mechanical fact the DRC needs and the
+    derivation does not."""
+    at: object
+    level: int
+    island: str
+    kind: str = "stacking-header"
+    note: str = ""
 
 
 @dataclass
@@ -215,6 +266,7 @@ class Device:
     island: str
     side: str = "top"
     rating: str = ""
+    level: int = 0
 
     def addr_of(self, pin):
         for t in self.terminals:
@@ -264,6 +316,18 @@ class Island:
     bench_only: list[str]
     schema_version: int = SCHEMA_VERSION
     devices: list[Device] = field(default_factory=list)
+    risers: list[Riser] = field(default_factory=list)
+
+    def sockets(self):
+        """(row, half, hole) -> set of levels reachable there.
+
+        The mechanical answer to "can something land here at level N",
+        which link bars (PR C) need and derivation never does."""
+        out = {}
+        for r in self.risers:
+            out.setdefault((r.at.row, r.at.half, r.at.hole),
+                           set()).add(r.level)
+        return out
 
     def terminal_groups(self):
         """Every inline part on this island as (part, [Terminal]) — the
@@ -468,14 +532,11 @@ def island_from(d, parts_lib):
         if kind not in PASSIVE_KINDS:
             raise ModelError(f"{name}.{q.get('ref')}: kind {kind!r} not in "
                              f"{sorted(PASSIVE_KINDS)}")
-        side = q.get("side", "top")
-        if side not in ("top", "bottom"):
-            raise ModelError(f"{name}.{q.get('ref')}: side {side!r} not "
-                             "'top' or 'bottom'")
+        side, level = level_of(q, f"{name}.{q.get('ref')}")
         passives.append(Passive(q.get("ref", "?"), kind,
                                 str(q.get("value", "")),
                                 ep(q["from"]), ep(q["to"]), name, side,
-                                str(q.get("rating", ""))))
+                                str(q.get("rating", "")), level))
 
     devices = []
     for dv in d.get("devices") or []:
@@ -486,10 +547,7 @@ def island_from(d, parts_lib):
                 f"{name}.{ref}: device kind {kind!r} not in "
                 f"{sorted(DEVICE_KINDS)} — two-terminal parts go under "
                 "`passives:` with from/to, not here")
-        side = dv.get("side", "top")
-        if side not in ("top", "bottom"):
-            raise ModelError(f"{name}.{ref}: side {side!r} not "
-                             "'top' or 'bottom'")
+        side, level = level_of(dv, f"{name}.{ref}")
         pinout = DEVICE_PINOUTS[kind]
         placed = {str(k): v for k, v in (dv.get("pins") or {}).items()}
         # Both directions are errors, and for the same reason: on a part
@@ -508,7 +566,27 @@ def island_from(d, parts_lib):
                      for i, p in enumerate(pinout)]
         devices.append(Device(ref, kind, str(dv.get("value", "")),
                               terminals, name, side,
-                              str(dv.get("rating", ""))))
+                              str(dv.get("rating", "")), level))
+
+    risers = []
+    for rs in d.get("risers") or []:
+        where = f"{name}.riser@{rs.get('at')}"
+        level = rs.get("level")
+        if not isinstance(level, int) or isinstance(level, bool):
+            raise ModelError(f"{where}: level {level!r} must be an integer")
+        if level <= 0:
+            raise ModelError(
+                f"{where}: level {level} — a riser exists to reach ABOVE "
+                "the board; level 0 is the surface itself and negative "
+                "levels are the underside, which needs no riser")
+        at = ep(rs["at"])
+        if not isinstance(at, HoleAddr) or not at.hole:
+            raise ModelError(
+                f"{where}: a riser is soldered into ONE hole, so its "
+                "address must name the hole (`20a`, not `20L` or a rail)")
+        risers.append(Riser(at, level, name,
+                            str(rs.get("kind", "stacking-header")),
+                            str(rs.get("note", ""))))
 
     jumpers = [Jumper(ep(j["from"]), ep(j["to"]), str(j.get("colour", "")),
                       str(j.get("note", "")), name,
@@ -533,7 +611,7 @@ def island_from(d, parts_lib):
                   (bool(rb) if rb is not None else None),
                   parts, passives, jumpers, leads, inter,
                   [str(x) for x in (d.get("bench_only") or [])],
-                  sv, devices)
+                  sv, devices, risers)
 
 
 # -------------------------------------------------------------- derivation

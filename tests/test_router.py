@@ -431,3 +431,52 @@ def test_device_legs_occupy_their_holes():
     r = router._IslandRouter(isl, [], router._NetCtx())
     for row in (20, 21, 22):
         assert (lat.x_of("a"), row) in r.solder_cells
+
+
+def _lvl_island(**over):
+    d = {"island": "bb1", "board": "full-830",
+         "rails": {"top+": "3V3", "top-": "GND", "bot+": "5V",
+                   "bot-": "GND"}}
+    d.update(over)
+    return d
+
+
+def _occupancy(d):
+    from bbnet import model, router
+    from bbnet.model import island_from
+    isl = island_from(d, {})
+    model.derive({isl.name: isl}, registry())
+    return router._IslandRouter(isl, [], router._NetCtx())
+
+
+def test_lifting_a_body_frees_the_surface_channel():
+    """The point of building upward. A resistor lying on the board
+    claims surface cells the autorouter must route around; the same
+    resistor on risers at level 1 claims none of them, because nothing
+    on the surface has to dodge a body that is no longer on it."""
+    flat = _occupancy(_lvl_island(passives=[
+        {"ref": "R1", "kind": "resistor", "value": "1k",
+         "from": "20a", "to": "20e"}]))
+    lifted = _occupancy(_lvl_island(passives=[
+        {"ref": "R1", "kind": "resistor", "value": "1k",
+         "from": "20a", "to": "20e", "level": 1}]))
+    assert flat.passive_cells, "flat resistor should claim surface cells"
+    assert lifted.passive_cells == set()
+    assert lifted.level_cells[1] == flat.passive_cells
+
+
+def test_underside_still_claims_no_surface_cells():
+    """side: bottom was already excluded from surface keep-out before
+    levels existed; routing it through level -1 must not change that."""
+    under = _occupancy(_lvl_island(passives=[
+        {"ref": "R1", "kind": "resistor", "value": "1k",
+         "from": "20a", "to": "20e", "side": "bottom"}]))
+    assert under.passive_cells == set()
+    assert under.level_cells[-1]
+
+
+def test_riser_claims_its_hole():
+    """The socket is above the board but the pin is IN the hole, so B1
+    has to see it as an occupant."""
+    r = _occupancy(_lvl_island(risers=[{"at": "20a", "level": 1}]))
+    assert (r.lat.x_of("a"), 20) in r.solder_cells
