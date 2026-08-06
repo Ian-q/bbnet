@@ -232,6 +232,16 @@ class _IslandRouter:
             occupy(q.b)
             if getattr(q, "side", "top") == "top":
                 self.passive_cells |= self._span(q.a, q.b)
+        for dv in getattr(isl, "devices", ()):
+            for t in dv.terminals:
+                occupy(t.addr)
+            # A three-legged part has no single body axis the way a
+            # resistor does, so its keep-out is the span across its
+            # outermost legs — the TO-92 tab really does sit over the
+            # holes between G and S.
+            if dv.side == "top" and len(dv.terminals) > 1:
+                self.passive_cells |= self._span(dv.terminals[0].addr,
+                                                 dv.terminals[-1].addr)
         for j in isl.jumpers + isl.interlinks:
             occupy(j.a)
             occupy(j.b)

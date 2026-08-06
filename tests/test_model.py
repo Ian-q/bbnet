@@ -331,3 +331,100 @@ def test_malformed_schema_version_is_rejected(sv):
             "schema_version": sv,
             "parts": [{"ref": "U1", "pins": {"1": "5c"}}]}, {})
     assert repr(sv) in str(e.value)
+
+
+# ------------------------------------------------- multi-terminal devices
+
+def _dev_island(**over):
+    d = {"island": "bb1", "board": "full-830",
+         "rails": {"top+": "3V3", "top-": "GND"}}
+    d.update(over)
+    return d
+
+
+FET = {"ref": "Q1", "kind": "mosfet", "value": "2N7000",
+       "pins": {"G": "20a", "D": "21a", "S": "22a"}}
+
+
+def test_device_legs_land_on_separate_nets():
+    """The point of the whole refactor: a three-legged part keeps its
+    legs on three nets. `Passive` could only ever express two, so a
+    2N7000 was unrepresentable before this."""
+    design = _derive(_dev_island(devices=[dict(FET)]))
+    nids = design.device_nids["Q1"]
+    assert sorted(nids) == ["D", "G", "S"]
+    assert len({nids["G"], nids["D"], nids["S"]}) == 3
+
+
+def test_device_leg_merges_with_what_it_is_wired_to():
+    """A device leg is an ordinary net member — a jumper from the gate
+    to the 3V3 rail must put the gate ON 3V3, not beside it."""
+    design = _derive(_dev_island(
+        devices=[dict(FET)],
+        jumpers=[{"from": "20b", "to": "rail:top+", "colour": "RED"}]))
+    gate = design.nets[design.device_nids["Q1"]["G"]]
+    assert gate.name == "3V3"
+
+
+def test_device_pins_are_hole_members_like_any_other_leg():
+    """B1 occupancy counts legs per hole out of design.hole_members; a
+    device leg has to be in there or two parts could share a hole and
+    the DRC would never notice."""
+    design = _derive(_dev_island(devices=[dict(FET)]))
+    assert design.hole_members[("bb1", 20, "L", "a")] == ["Q1.G"]
+    assert design.hole_members[("bb1", 22, "L", "a")] == ["Q1.S"]
+
+
+def test_device_rejects_unknown_pin_name():
+    """A leg name the pinout does not know is a wiring mistake, not a
+    free-form label — on a part whose legs are not interchangeable the
+    netlist would otherwise absorb it silently."""
+    bad = dict(FET, pins={"G": "20a", "D": "21a", "SOURCE": "22a"})
+    with pytest.raises(ModelError, match="no pin"):
+        _derive(_dev_island(devices=[bad]))
+
+
+def test_device_rejects_unplaced_pin():
+    bad = dict(FET, pins={"G": "20a", "D": "21a"})
+    with pytest.raises(ModelError, match="unplaced"):
+        _derive(_dev_island(devices=[bad]))
+
+
+def test_two_terminal_kind_is_rejected_as_a_device():
+    """Resistors keep their from/to form; `devices:` is for parts the
+    two-terminal schema cannot express."""
+    with pytest.raises(ModelError, match="passives"):
+        _derive(_dev_island(devices=[{"ref": "R1", "kind": "resistor",
+                                      "pins": {"a": "20a", "b": "21a"}}]))
+
+
+def test_pot_wiper_is_its_own_net():
+    design = _derive(_dev_island(devices=[
+        {"ref": "RV1", "kind": "pot", "value": "10k",
+         "pins": {"A": "20a", "W": "21a", "B": "22a"}}]))
+    nids = design.device_nids["RV1"]
+    assert len({nids["A"], nids["W"], nids["B"]}) == 3
+
+
+def test_new_two_terminal_kinds_derive_as_edges():
+    """inductor/ferrite/fuse take the passive path, so they arrive in
+    design.edges and stay visible to the geometry rules that walk it."""
+    design = _derive(_dev_island(passives=[
+        {"ref": "L1", "kind": "inductor", "value": "10u",
+         "from": "20a", "to": "21a"},
+        {"ref": "F1", "kind": "fuse", "value": "2A",
+         "from": "22a", "to": "23a"}]))
+    kinds = {e.ref: e.kind for e in design.edges}
+    assert kinds == {"L1": "inductor", "F1": "fuse"}
+    assert all(e.a_nid != e.b_nid for e in design.edges)
+
+
+def test_terminal_groups_yields_passives_and_devices_uniformly():
+    """One derivation path is the whole design premise — a caller must
+    not need isinstance to walk both kinds of inline part."""
+    isl = island_from(_dev_island(
+        devices=[dict(FET)],
+        passives=[{"ref": "R1", "kind": "resistor", "value": "10k",
+                   "from": "30a", "to": "31a"}]), {})
+    groups = {p.ref: len(ts) for p, ts in isl.terminal_groups()}
+    assert groups == {"R1": 2, "Q1": 3}
