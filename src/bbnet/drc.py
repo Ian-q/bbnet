@@ -30,6 +30,14 @@ Rules (each encodes a real breadboard bug class):
   B15 link stray pin  an unclipped bar position the author never listed
                    as connected, sitting on a riser — the pin is bonding
                    a net into the bar that nobody asked it to
+  B16 link stock   a bar cut longer than the stock it is cut from
+  B17 closed-by-default  a switched set that is closed with nothing
+                   driving it, tying two named rails together — a short
+                   at power-on, before anything can open it
+
+Note on B9: two bodies crossing at DIFFERENT levels is not a collision.
+That is what building upward is for, so the rule compares level, not
+just face.
 """
 from __future__ import annotations
 
@@ -37,7 +45,7 @@ import re
 from dataclasses import dataclass
 
 from bbnet.geometry import HOLE_TENTHS, HoleAddr, RailAddr
-from bbnet.model import CAP_KINDS, ModelError
+from bbnet.model import CAP_KINDS, SWITCHED_SETS, ModelError
 
 
 @dataclass
@@ -491,15 +499,22 @@ def rule_passive_overlap(design, rules, colours):
             b = _passive_xy(q.b, q.a)
             if a is None or b is None:
                 continue        # rail-to-rail: builder places it freely
-            side = getattr(q, "side", "top")
-            for (pref, pside, pa, pb) in placed:
-                if pside == side and _segs_touch(a, b, pa, pb):
+            # Levels do not weaken this rule, they make it correct. Two
+            # bodies crossing at DIFFERENT heights is not a collision —
+            # it is the entire point of building upward, and flagging it
+            # would fight the design. Same level is still a real clash.
+            level = getattr(q, "level", 0)
+            for (pref, plevel, pa, pb) in placed:
+                if plevel == level and _segs_touch(a, b, pa, pb):
+                    where = ("the top face" if level == 0
+                             else "the underside" if level < 0
+                             else f"level {level}")
                     out.append(Violation(
                         "passive-overlap", "error",
                         f"{isl.name}: {q.ref} and {pref} lie across "
-                        f"each other on the {side} face — move one to "
-                        "the other side (side: bottom) or re-hole it"))
-            placed.append((q.ref, side, a, b))
+                        f"each other on {where} — move one to another "
+                        "level (or side: bottom) or re-hole it"))
+            placed.append((q.ref, level, a, b))
     return out
 
 
@@ -740,6 +755,45 @@ def rule_link_stray_pin(design, rules, colours):
     return out
 
 
+def rule_closed_by_default(design, rules, colours):
+    """B17: a switched set that is closed with nothing driving it, tying
+    two differently-named power rails together.
+
+    The netlist bbnet derives is the de-energized state, so a
+    normally-closed switch or relay contact really is a piece of wire
+    until something moves it. If that wire sits between 5V and 3V3, the
+    board is shorted the moment it is powered — before any firmware runs
+    and before anything gets a chance to open the contact.
+
+    Warning rather than error: bridging two rails through a contact is
+    occasionally the point (a bypass or a fail-safe path). But it should
+    never be a surprise."""
+    out = []
+    for iname in sorted(design.islands):
+        isl = design.islands[iname]
+        for dv in isl.devices:
+            if dv.kind not in SWITCHED_SETS:
+                continue
+            nids = design.device_nids.get(dv.ref) or {}
+            for pins, default in SWITCHED_SETS[dv.kind]:
+                state = dv.normally or default
+                if state != "closed":
+                    continue
+                nid = nids.get(pins[0])
+                if nid is None:
+                    continue
+                net = design.nets[nid]
+                rails = sorted(set(net.rail_seeds))
+                if len(rails) > 1:
+                    out.append(Violation(
+                        "closed-by-default", "warning",
+                        f"{iname}: {dv.ref} ({dv.kind}) is CLOSED with "
+                        f"nothing driving it, tying {' + '.join(rails)} "
+                        f"through {'-'.join(pins)} — that is a short at "
+                        "power-on, before anything can open it"))
+    return out
+
+
 def rule_link_stock(design, rules, colours):
     """B16: a bar cut longer than the stock it is cut from.
 
@@ -760,7 +814,7 @@ def rule_link_stock(design, rules, colours):
 
 
 def run_all(design, rules, colours, routed=None):
-    """Run every rule -> (violations, todos), stable order B1..B16.
+    """Run every rule -> (violations, todos), stable order B1..B17.
 
     `routed` (island -> (wires, stats, lattice) from router.route_design)
     enables the geometry-dependent rules; without it B12 and B13 are
@@ -770,7 +824,8 @@ def run_all(design, rules, colours, routed=None):
                  rule_colour, rule_pinmap_xcheck, rule_passive_span,
                  rule_passive_overlap, rule_cap_polarity,
                  rule_voltage_rating, rule_link_support,
-                 rule_link_stray_pin, rule_link_stock):
+                 rule_link_stray_pin, rule_link_stock,
+                 rule_closed_by_default):
         violations.extend(rule(design, rules, colours))
     violations.extend(rule_in_node_detour(design, rules, colours, routed))
     violations.extend(rule_halfrow_landing(design, rules, colours, routed))
