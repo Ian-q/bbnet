@@ -97,6 +97,9 @@ class RouteStats:
     total_cells: int = 0
     max_overuse: int = 0
     iterations: int = 0
+    # half-row endpoints with no clean hole left (DRC B13 input) —
+    # [(kind, label, row, half, rank, hole)]
+    landings: list = field(default_factory=list)
 
 
 class Lattice:
@@ -183,6 +186,7 @@ class _IslandRouter:
         self.pair_side = pair_side or {}
         self._build_occupancy()
         self.wires = self._collect_wires(remote_stubs)
+        self.landings = self._scan_landings(remote_stubs)
 
     # -------------------------------------------------- occupancy & costs
 
@@ -211,6 +215,16 @@ class _IslandRouter:
         for part in isl.parts:
             for a in part.pins.values():
                 occupy(a)
+                # A module's pins are usually recorded as bare half-rows
+                # (`39L`) because the net does not care which hole. The
+                # PIN does: a DIP/click footprint puts every left pin in
+                # the anchor column and every right pin in the far one,
+                # so those holes are physically full even though the
+                # address never said so. Register them, or a half-row
+                # endpoint elsewhere gets drawn landing on top of a pin.
+                col = self._pin_col(part, a)
+                if col is not None:
+                    self.solder_cells.add((col, a.row))
             self.body_cells |= self._body(part)
             self.passive_cells |= self._overhang_cells(part)
         for q in isl.passives:
@@ -224,12 +238,36 @@ class _IslandRouter:
         for w in isl.leads:
             occupy(w.at)
 
+    def _pin_col(self, part, addr):
+        """Lattice x of a part pin recorded as a bare half-row, or None
+        when the address already names a hole (or the part has no
+        footprint to infer from). A dip/click straddles the ravine with
+        its two pin rows at the anchor column and `dip_right_col`;
+        anything else keeps every pin in the anchor column."""
+        if getattr(addr, "hole", None) or part.fp is None \
+                or part.anchor is None or part.anchor.hole is None:
+            return None
+        lat = self.lat
+        if part.fp.kind == "dip":
+            return lat.x_of(dip_right_col(part) if addr.half == "R"
+                            else part.anchor.hole)
+        # single-column part: the anchor speaks only for its own half
+        if addr.half == part.anchor.half:
+            return lat.x_of(part.anchor.hole)
+        return None
+
     def _body(self, part):
         """TOP-layer cells covered by a part body."""
         lat = self.lat
         pins = list(part.pins.values())
         rows = [a.row for a in pins]
-        if part.fp is not None and part.anchor is not None:
+        # An anchor pinned to a bare half-row (`20L`) names no column, so
+        # there is no footprint-derived span to compute — fall through to
+        # the pin-derived one. `_overhang_cells` below guards the same
+        # case; `_body` only ever escaped it because nothing routed a
+        # design like that until DRC gained geometry-dependent rules.
+        if part.fp is not None and part.anchor is not None \
+                and part.anchor.hole is not None:
             c0 = part.anchor.hole
             if part.fp.kind == "dip":
                 x0, x1 = lat.x_of(c0), lat.x_of(dip_right_col(part))
@@ -285,6 +323,35 @@ class _IslandRouter:
 
     # ------------------------------------------------------ wire building
 
+    def _halfrow_choices(self, ep):
+        """Candidate holes for an endpoint written as a bare half-row
+        (`39L`, `40R`) -> [(cell, rank)], best first.
+
+        A half-row says "any hole in this node", which is electrically
+        true and physically not: a hole with a leg already in it is
+        taken (B1), and a hole under a part body cannot be reached from
+        the top at all. Ranking them means the drawn landing is one the
+        bench could actually solder — before this, the picker took the
+        first/last hole in the row and cheerfully drew the wire into an
+        occupied one.
+
+        rank 0 = free and open on top · 1 = free but under a body
+        (underside only) · 2 = already occupied. Nothing is dropped, so
+        a fully-claimed node still routes and B13 reports it."""
+        lat = self.lat
+        holes = LEFT_HOLES if ep.half == "L" else RIGHT_HOLES
+        out = []
+        for h in holes:
+            cell = (lat.x_of(h), ep.row)
+            if cell in self.solder_cells:
+                rank = 2
+            elif cell in self.body_cells:
+                rank = 1
+            else:
+                rank = 0
+            out.append((cell, rank))
+        return sorted(out, key=lambda t: (t[1], t[0]))
+
     def _terminal(self, ep):
         """Endpoint -> (cells, halfrows)."""
         lat = self.lat
@@ -296,8 +363,9 @@ class _IslandRouter:
         if isinstance(ep, HoleAddr):
             if ep.hole:
                 return [(lat.x_of(ep.hole), ep.row)], {(ep.row, ep.half)}
-            holes = LEFT_HOLES if ep.half == "L" else RIGHT_HOLES
-            return ([(lat.x_of(h), ep.row) for h in holes],
+            ranked = self._halfrow_choices(ep)
+            best = ranked[0][1]
+            return ([c for c, r in ranked if r == best],
                     {(ep.row, ep.half)})
         if isinstance(ep, RailAddr):
             x = lat.x_of(f"rail:{ep.strip}")
@@ -334,6 +402,44 @@ class _IslandRouter:
                         colour or "", label, link=link, link_end=link_end)
         rw.path = [Cell(TOP, ax, ay), Cell(TOP, ex, ay)]
         self.flywires.append(rw)
+
+    def _scan_landings(self, remote_stubs):
+        """Wire endpoints written as a bare half-row whose best remaining
+        hole is compromised -> [(kind, label, row, half, rank, hole)].
+
+        rank 1 = every free hole in the node is under a part body, so the
+        wire can only be landed from beneath; rank 2 = every hole already
+        has a leg in it. Both are decisions the model should be making
+        explicitly rather than leaving to whichever hole the picker
+        happens to reach for. DRC B13 turns these into instructions."""
+        out = []
+
+        def check(ep, kind, label):
+            if not isinstance(ep, HoleAddr) or ep.hole:
+                return
+            (cell, rank) = self._halfrow_choices(ep)[0]
+            if rank:
+                out.append((kind, label, ep.row, ep.half, rank,
+                            self.lat.name(cell[0])))
+
+        for j in self.isl.jumpers:
+            if not j.offgrid:
+                label = f"{_local(j.a)}→{_local(j.b)}"
+                check(j.a, "jumper", label)
+                check(j.b, "jumper", label)
+        for j in self.isl.interlinks:
+            if not j.offgrid:
+                check(j.a, "interlink", f"{_local(j.a)} ⇒ {j.b}")
+        for w in self.isl.leads:
+            check(w.at, "lead", f"{_local(w.at)} · {w.label}")
+        for origin, text, _c, _p, _n, _u, _link in remote_stubs:
+            try:
+                ep = parse_local(text, self.isl.name, self.isl.board,
+                                 self.isl.rails)
+            except Exception:
+                continue
+            check(ep, "interlink", f"{_local(ep)} ⇐ {origin}")
+        return out
 
     def _collect_wires(self, remote_stubs):
         wires = []
@@ -660,6 +766,7 @@ class _IslandRouter:
             stats.wires += 1
             stats.routed += 1
             routed.append(rw)
+        stats.landings = self.landings
         return routed, stats, self.lat
 
 
@@ -740,4 +847,37 @@ def route_design(islands: dict, design=None, rules=None, panels=()):
             key=lambda t: (t[0], t[1], t[2], t[3] or "")), ctx,
             sides.get(name))
         out[name] = r.route()
+    return out
+
+
+def in_node_runs(wires, lat):
+    """Every routed endpoint that walks across its OWN half-row before
+    leaving it: [(wire, end, row, half, [holes traversed, in order])].
+
+    The five holes of a half-row are one node, so a wire that lands in
+    one and then crawls to another has picked the wrong hole — the run
+    is redundant copper laid over holes it never uses, and it burns
+    channel cells its neighbours could have had. Geometry only; whether
+    a better hole is actually free is DRC's call (B12).
+
+    Underside airwires are skipped: their path is a layer hop at a fixed
+    hole and their body hangs in free air, crossing nothing on top."""
+    out = []
+    for w in wires:
+        if not w.path or w.fail or w.underside:
+            continue
+        for end, path in (("a", w.path), ("b", w.path[::-1])):
+            x0, y0 = path[0].x, path[0].y
+            half = lat.half(x0)
+            if half is None:
+                continue
+            holes = [lat.name(x0)]
+            for cell in path[1:]:
+                if (cell.layer != TOP or cell.y != y0
+                        or lat.half(cell.x) != half):
+                    break
+                if lat.name(cell.x) != holes[-1]:
+                    holes.append(lat.name(cell.x))
+            if len(holes) > 1:
+                out.append((w, end, y0, half, holes))
     return out

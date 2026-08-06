@@ -585,3 +585,187 @@ def test_net_voltages_explicitly_empty_is_rejected(bad_spec):
     than quietly re-enabling defaults they tried to turn off."""
     with pytest.raises(ModelError, match="net_voltages"):
         drc._net_volts("GND", {"net_voltages": bad_spec})
+
+
+# ------------------------------------------- B12 in-node detour (routed)
+
+def _routed_build(*island_dicts, lib=None, pinmap=(), rules=None,
+                  colours=None):
+    """build(), but with the autorouter run — B12 and B13 measure real
+    geometry, so they need the routed paths the way the CLI supplies
+    them."""
+    from bbnet import router
+    islands = {}
+    for d in island_dicts:
+        isl = island_from(d, lib or {})
+        islands[isl.name] = isl
+    design = model.derive(islands, registry(pinmap))
+    rules = rules or EMPTY_RULES
+    routed = router.route_design(islands, design, rules)
+    v, t = drc.run_all(design, rules, colours or EMPTY_COLOURS, routed)
+    return design, v, t
+
+
+def _detours(violations):
+    return [x.message for x in violations if x.rule == "in-node detour"]
+
+
+def test_in_node_detour_is_silent_without_routing():
+    """B12 is geometry-dependent; the connectivity-only commands must not
+    trip over its absence."""
+    _d, v, _t = build(base_island())
+    assert _detours(v) == []
+
+
+RAILED = {"top+": "3V3", "top-": "GND", "bot+": "5V", "bot-": "GND"}
+
+
+def _railed(**over):
+    """A full-830 with rails, so a wire can be aimed at the far side and
+    forced to leave its half-row toward the right-hand gutter."""
+    d = {"island": "bb1", "board": "full-830", "rails": dict(RAILED)}
+    d.update(over)
+    return d
+
+
+def test_wire_landing_short_of_its_exit_hole_is_flagged():
+    """A jumper that lands mid-half-row and crawls to the far side to
+    leave has picked the wrong hole — every hole in the row is the same
+    conductor, so the crawl is redundant copper over unused holes.
+    20h aimed at the RIGHT rail must cross i and j to get out."""
+    _d, v, _t = _routed_build(_railed(
+        jumpers=[{"from": "20h", "to": "rail:bot-", "colour": "BLK"}]))
+    hits = _detours(v)
+    assert len(hits) == 1, hits
+    assert "lands at 20h" in hits[0] and "land at 20j instead" in hits[0]
+    assert "frees 20h, 20i" in hits[0]
+
+
+def test_landing_on_the_exit_hole_is_clean():
+    """The same wire, landed where it actually leaves the node."""
+    _d, v, _t = _routed_build(_railed(
+        jumpers=[{"from": "20j", "to": "rail:bot-", "colour": "BLK"}]))
+    assert _detours(v) == []
+
+
+def test_detour_never_suggests_an_occupied_hole():
+    """A hole with a leg already in it is not available no matter how
+    much wire it would save (B1 owns that) — the suggestion falls back
+    to the furthest FREE hole along the crawl.
+
+    The occupant here is a LEAD: it holds the hole without blocking the
+    surface, so the wire still crawls over it and the fallback branch is
+    the one under test. A part pin instead makes the router dodge a row
+    early, and then there is no in-row crawl left to report."""
+    _d, v, _t = _routed_build(_railed(
+        leads=[{"at": "20j", "colour": "RED", "label": "off-board feed"}],
+        jumpers=[{"from": "20h", "to": "rail:bot-", "colour": "BLK"}]))
+    hits = _detours(v)
+    assert len(hits) == 1, hits
+    assert "land at 20i instead" in hits[0], hits[0]
+
+
+def test_detour_silent_when_every_better_hole_is_taken():
+    _d, v, _t = _routed_build(_railed(
+        leads=[{"at": "20i", "colour": "RED", "label": "a"},
+               {"at": "20j", "colour": "RED", "label": "b"}],
+        jumpers=[{"from": "20h", "to": "rail:bot-", "colour": "BLK"}]))
+    assert _detours(v) == []
+
+
+def test_ravine_crossing_should_land_on_the_inner_holes():
+    """Same rule, the other common shape: a row-20 L↔R strap soldered at
+    h and c sprawls across six holes when e/f would do."""
+    _d, v, _t = _routed_build(_railed(
+        jumpers=[{"from": "20h", "to": "20c", "colour": "GRN"}]))
+    hits = sorted(_detours(v))
+    assert len(hits) == 2, hits
+    assert any("land at 20f instead" in m for m in hits)
+    assert any("land at 20e instead" in m for m in hits)
+
+
+def test_in_node_waiver_silences_a_deliberate_landing():
+    isl = _railed(
+        jumpers=[{"from": "20h", "to": "rail:bot-", "colour": "BLK"}])
+    _d, v, _t = _routed_build(isl)
+    assert _detours(v), "expected the un-waived case to fire"
+    _d, v2, _t = _routed_build(
+        isl, rules=dict(EMPTY_RULES, in_node_waivers=["bb1:20h"]))
+    assert _detours(v2) == []
+
+
+# ------------------------------------------ B13 half-row landing (routed)
+
+def _landings(violations):
+    return [x.message for x in violations if x.rule == "half-row landing"]
+
+
+def test_halfrow_endpoint_prefers_a_free_hole_over_an_occupied_one():
+    """`20L` means "any hole in this node" — but not one that already has
+    a leg in it. Before this, the picker took the geometric end of the
+    row and drew the wire straight through the resistor's leg."""
+    from bbnet import router
+    isl = island_from({
+        "island": "bb1", "board": "full-830",
+        "rails": dict(RAILED),
+        "passives": [{"ref": "R1", "kind": "resistor", "value": "10k",
+                      "from": "20a", "to": "rail:top+"}],
+        "jumpers": [{"from": "20L", "to": "40L", "colour": "GRN"}]}, {})
+    islands = {isl.name: isl}
+    design = model.derive(islands, registry())
+    routed = router.route_design(islands, design, EMPTY_RULES)
+    wires, _stats, lat = routed["bb1"]
+    landed = {f"{lat.name(w.path[0].x)}{w.path[0].y}" for w in wires
+              if w.kind == "jumper"}
+    assert "a20" not in landed, f"landed on R1's leg: {landed}"
+
+
+def test_halfrow_with_only_body_covered_holes_is_reported():
+    """A click straddling the ravine covers every hole between its two
+    pin rows, so a node under it can only be landed from beneath — B13
+    says so instead of letting the picker pretend otherwise."""
+    from bbnet import router
+    lib = model.parts_lib_from({
+        "clickish": {"kind": "dip", "span": 9,
+                     "pins": ["P1", "P2", "P3", "P4"]}})
+    isl = island_from({
+        "island": "bb1", "board": "full-830", "rails": dict(RAILED),
+        "parts": [{"ref": "U1", "part": "clickish", "pin1": "20b"}],
+        "passives": [{"ref": "R1", "kind": "resistor", "value": "10k",
+                      "from": "20a", "to": "rail:top+"}],
+        "jumpers": [{"from": "20L", "to": "40L", "colour": "GRN"}]}, lib)
+    islands = {isl.name: isl}
+    design = model.derive(islands, registry())
+    routed = router.route_design(islands, design, EMPTY_RULES)
+    v = drc.rule_halfrow_landing(design, EMPTY_RULES, EMPTY_COLOURS, routed)
+    msgs = _landings(v)
+    assert any("20L" in m and "underside: true" in m for m in msgs), msgs
+
+
+def test_pinned_hole_is_never_a_halfrow_landing_finding():
+    """B13 is about the model leaving the hole unsaid; once it is pinned
+    the decision has been made and the rule has nothing to say."""
+    _d, v, _t = _routed_build(_railed(
+        passives=[{"ref": "R1", "kind": "resistor", "value": "10k",
+                   "from": "20a", "to": "rail:top+"}],
+        jumpers=[{"from": "20c", "to": "40c", "colour": "GRN"}]))
+    assert _landings(v) == []
+
+
+def test_body_span_survives_an_anchor_pinned_to_a_bare_halfrow():
+    """A part anchored at `20L` names no column, so there is no
+    footprint-derived body span to compute. `_body` used to reach for
+    the anchor's hole unconditionally and die on None — invisible until
+    DRC gained geometry-dependent rules and started routing every
+    build()."""
+    from bbnet import router
+    lib = model.parts_lib_from({
+        "clickish": {"kind": "dip", "span": 9,
+                     "pins": ["P1", "P2", "P3", "P4"]}})
+    isl = island_from({
+        "island": "bb1", "board": "full-830", "rails": dict(RAILED),
+        "parts": [{"ref": "U1", "part": "clickish", "pin1": "20L"}]}, lib)
+    islands = {isl.name: isl}
+    design = model.derive(islands, registry())
+    routed = router.route_design(islands, design, EMPTY_RULES)
+    assert "bb1" in routed

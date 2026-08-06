@@ -17,6 +17,14 @@ Rules (each encodes a real breadboard bug class):
                    convention; flag one reversed across GND and power
   B11 voltage-rating a rated part across a known power net: error when
                    the rail exceeds the rating, warn on thin derating
+  B12 in-node detour  a wire landing in one hole of a half-row and then
+                   crawling across its own node to leave — the holes are
+                   one conductor, so the crawl is wasted wire over holes
+                   it never uses (needs routed geometry; waivable)
+  B13 half-row landing  an endpoint left as a bare half-row (`39L`) whose
+                   only remaining holes are taken or under a part body —
+                   pin the hole, and say `underside: true` if the module
+                   is sitting on it (needs routed geometry)
 """
 from __future__ import annotations
 
@@ -594,12 +602,93 @@ def rule_voltage_rating(design, rules, colours):
     return out
 
 
-def run_all(design, rules, colours):
-    """Run every rule -> (violations, todos), stable order B1..B11."""
+def rule_in_node_detour(design, rules, colours, routed=None):
+    """B12: a wire that lands in one hole of a half-row and then crawls
+    across its own node to leave.
+
+    The five holes of a half-row are ONE conductor, so which hole a wire
+    lands in is free choice. Landing in the wrong one buys nothing and
+    costs three ways: extra wire, a body laid over holes it never uses
+    (awkward to solder into later), and channel cells the neighbours
+    wanted. `61h -> 40R` crawling h→i→j just to reach the gutter is the
+    canonical shape — solder it at 61j and it leaves straight out.
+
+    Advisory, because the fix is to re-land a wire: on an as-built run
+    that means desoldering, and the call is the bench's. Waive a
+    deliberate one with `in_node_waivers: ["<island>:<row><hole>"]`.
+
+    Needs routed geometry (the router resolves half-row endpoints to a
+    real hole), so it no-ops when `routed` is absent."""
+    if not routed:
+        return []
+    from bbnet import router as _router
+    waived = set(rules.get("in_node_waivers") or ())
+    out = []
+    for iname, (wires, _stats, lat) in sorted(routed.items()):
+        for w, _end, row, half, holes in _router.in_node_runs(wires, lat):
+            if f"{iname}:{row}{holes[0]}" in waived:
+                continue
+            # the best landing is the furthest hole along the crawl that
+            # nothing else already occupies — a hole with a leg in it is
+            # not available no matter how much wire it would save (B1)
+            better = [h for h in holes[1:]
+                      if not design.hole_members.get((iname, row, half, h))]
+            if not better:
+                continue
+            target = better[-1]
+            saved = holes.index(target)
+            covered = ", ".join(f"{row}{h}" for h in holes[:saved])
+            out.append(Violation(
+                "in-node detour", "warning",
+                f"{iname}: {w.kind} {w.label.split(' · ')[0]} lands at "
+                f"{row}{holes[0]} then runs {saved} hole(s) along its own "
+                f"half-row before leaving — land at {row}{target} instead "
+                f"(same node, {saved} cell(s) shorter, frees {covered})"))
+    return out
+
+
+def rule_halfrow_landing(design, rules, colours, routed=None):
+    """B13: a wire endpoint written as a bare half-row (`39L`) whose only
+    remaining holes are compromised.
+
+    `39L` means "any hole in this node", which is electrically true and
+    physically not. When R7's leg holds 39a and the IMU click's body
+    covers 39b-e, the only landings left are under the module — the wire
+    has to be soldered from BENEATH, and the model should say so instead
+    of letting the picker choose a hole and draw a wire the bench cannot
+    actually run. Pin the hole and add `underside: true`.
+
+    Warning, not error: the wire IS connectable, and which hole plus
+    which face is a bench decision. Silent without routed geometry."""
+    if not routed:
+        return []
+    why = {1: ("every free hole is under a part body — solder from "
+               "beneath: pin the hole and set underside: true"),
+           2: ("every hole in the node already has a leg in it — free "
+               "one, or move the wire to another member of this net")}
+    out = []
+    for iname, (_wires, stats, _lat) in sorted(routed.items()):
+        for kind, label, row, half, rank, hole in getattr(
+                stats, "landings", ()):
+            out.append(Violation(
+                "half-row landing", "warning",
+                f"{iname}: {kind} {label} lands anywhere in {row}{half} "
+                f"and the router picked {row}{hole} — {why[rank]}"))
+    return out
+
+
+def run_all(design, rules, colours, routed=None):
+    """Run every rule -> (violations, todos), stable order B1..B13.
+
+    `routed` (island -> (wires, stats, lattice) from router.route_design)
+    enables the geometry-dependent rules; without it B12 and B13 are
+    skipped and everything else is unaffected."""
     violations, todos = rule_requirements(design, rules, colours)
     for rule in (rule_occupancy, rule_rails, rule_signal_short,
                  rule_colour, rule_pinmap_xcheck, rule_passive_span,
                  rule_passive_overlap, rule_cap_polarity,
                  rule_voltage_rating):
         violations.extend(rule(design, rules, colours))
+    violations.extend(rule_in_node_detour(design, rules, colours, routed))
+    violations.extend(rule_halfrow_landing(design, rules, colours, routed))
     return violations, todos
