@@ -501,3 +501,91 @@ def test_riser_must_name_a_hole_not_a_half_row():
 def test_riser_level_must_be_above_the_board():
     with pytest.raises(ModelError, match="reach ABOVE"):
         island_from(_dev_island(risers=[{"at": "20a", "level": 0}]), {})
+
+
+# ----------------------------------------------------------- link bars
+
+def _lk_island(**over):
+    d = {"island": "bb1", "board": "full-830",
+         "rails": {"top+": "3V3", "top-": "GND"}}
+    d.update(over)
+    return d
+
+
+def test_link_positions_fill_the_span_between_bonded_holes():
+    """The bar covers every slot it physically spans, not just the ones
+    named — the unnamed ones are exactly what B15 has to police."""
+    isl = island_from(_lk_island(links=[
+        {"ref": "LK1", "level": 1, "connects": ["20a", "24a"]}]), {})
+    lk = isl.links[0]
+    assert [a.row for a in lk.positions] == [20, 21, 22, 23, 24]
+    assert lk.length == 5
+    assert [a.row for a in lk.floats()] == [21, 22, 23]
+
+
+def test_link_runs_along_a_row_too():
+    isl = island_from(_lk_island(links=[
+        {"ref": "LK1", "level": 1, "connects": ["20a", "20e"]}]), {})
+    assert [a.hole for a in isl.links[0].positions] == list("abcde")
+
+
+def test_link_cannot_cross_the_ravine():
+    """A rigid bar spanning a->f would have to bridge the gutter."""
+    with pytest.raises(ModelError, match="ravine"):
+        island_from(_lk_island(links=[
+            {"ref": "LK1", "level": 1, "connects": ["20a", "20f"]}]), {})
+
+
+def test_link_cannot_run_diagonally():
+    with pytest.raises(ModelError, match="not in one line"):
+        island_from(_lk_island(links=[
+            {"ref": "LK1", "level": 1, "connects": ["20a", "24c"]}]), {})
+
+
+def test_link_at_level_zero_is_a_jumper():
+    with pytest.raises(ModelError, match="jumpers"):
+        island_from(_lk_island(links=[
+            {"ref": "LK1", "level": 0, "connects": ["20a", "22a"]}]), {})
+
+
+def test_link_needs_two_bonded_positions():
+    with pytest.raises(ModelError, match="at least two"):
+        island_from(_lk_island(links=[
+            {"ref": "LK1", "level": 1, "connects": ["20a"]}]), {})
+
+
+def test_position_cannot_be_both_connected_and_clipped():
+    with pytest.raises(ModelError, match="BOTH connected"):
+        island_from(_lk_island(links=[
+            {"ref": "LK1", "level": 1, "connects": ["20a", "22a"],
+             "clipped": ["22a"]}]), {})
+
+
+def test_a_clipped_end_position_still_sets_the_bar_length():
+    """Snipping a pin does not shorten the PCB it was on, so a clipped
+    end position still says how long the bar is — which is what the
+    stock check (B16) has to measure against."""
+    isl = island_from(_lk_island(links=[
+        {"ref": "LK1", "level": 1, "connects": ["20a", "22a"],
+         "clipped": ["24a"]}]), {})
+    assert isl.links[0].length == 5
+
+
+def test_link_fab_must_be_known():
+    """pcb-rail or bent-wire — the model stays agnostic between ordering
+    1xN rails and bending solid core on a jig, but not silently so."""
+    with pytest.raises(ModelError, match="fab"):
+        island_from(_lk_island(links=[
+            {"ref": "LK1", "level": 1, "connects": ["20a", "22a"],
+             "fab": "wishful-thinking"}]), {})
+
+
+def test_link_terminals_are_one_conductor():
+    """All bonded positions share net_index 0 — that single fact is what
+    makes derivation need no special case for bars."""
+    isl = island_from(_lk_island(links=[
+        {"ref": "LK1", "level": 1,
+         "connects": ["20a", "22a", "24a"], "clipped": ["21a", "23a"]}]), {})
+    ts = isl.links[0].terminals()
+    assert len(ts) == 3
+    assert {t.net_index for t in ts} == {0}

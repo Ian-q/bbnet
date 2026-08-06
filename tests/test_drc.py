@@ -769,3 +769,124 @@ def test_body_span_survives_an_anchor_pinned_to_a_bare_halfrow():
     design = model.derive(islands, registry())
     routed = router.route_design(islands, design, EMPTY_RULES)
     assert "bb1" in routed
+
+
+# --------------------------------------------- B14-B16 link bars (levels)
+
+def _link_island(**over):
+    d = {"island": "bb1", "board": "full-830", "rails": dict(RAILED)}
+    d.update(over)
+    return d
+
+
+def _risers(*specs):
+    return [{"at": at, "level": lv} for at, lv in specs]
+
+
+def _link_rule(v, rule):
+    return [x.message for x in v if x.rule == rule]
+
+
+def test_link_bar_fans_one_net_across_every_bonded_position():
+    """The reason link bars exist: a 1xN is ONE conductor, so one 3V3
+    tap feeds every position it bonds. All five holes must land on the
+    same net, and that net must be 3V3 — not a fresh unnamed one."""
+    _d, v, _t = build(_link_island(
+        risers=_risers(("20a", 1), ("22a", 1), ("24a", 1)),
+        jumpers=[{"from": "20b", "to": "rail:top+", "colour": "RED"}],
+        links=[{"ref": "LK1", "level": 1,
+                "connects": ["20a", "22a", "24a"],
+                "clipped": ["21a", "23a"], "stock": 5}]))
+    assert [x for x in v if x.severity == "error"] == []
+    design, _v, _t = build(_link_island(
+        risers=_risers(("20a", 1), ("22a", 1), ("24a", 1)),
+        jumpers=[{"from": "20b", "to": "rail:top+", "colour": "RED"}],
+        links=[{"ref": "LK1", "level": 1,
+                "connects": ["20a", "22a", "24a"],
+                "clipped": ["21a", "23a"], "stock": 5}]))
+    nets = {design.nid_of_key[("row", "bb1", r, "L")] for r in (20, 22, 24)}
+    assert len(nets) == 1, "a 1xN bar is one conductor"
+    assert design.nets[nets.pop()].name == "3V3"
+
+
+def test_link_without_a_riser_under_a_bonded_position_is_an_error():
+    """B14. The bar has nothing to plug into there, so the netlist would
+    be claiming a bond the hardware does not have."""
+    _d, v, _t = build(_link_island(
+        risers=_risers(("20a", 1)),
+        links=[{"ref": "LK1", "level": 1, "connects": ["20a", "22a"],
+                "clipped": ["21a"]}]))
+    hits = _link_rule(v, "link support")
+    assert len(hits) == 1 and "22a" in hits[0], hits
+    assert "no riser at all" in hits[0]
+
+
+def test_link_riser_at_the_wrong_level_is_an_error():
+    _d, v, _t = build(_link_island(
+        risers=_risers(("20a", 1), ("22a", 2)),
+        links=[{"ref": "LK1", "level": 1, "connects": ["20a", "22a"],
+                "clipped": ["21a"]}]))
+    hits = _link_rule(v, "link support")
+    assert len(hits) == 1 and "only [2]" in hits[0], hits
+
+
+def test_unlisted_position_with_no_riser_is_fine():
+    """A float is the common case and it is harmless — all pins are the
+    same length, so one with nothing beneath it hangs in free air."""
+    _d, v, _t = build(_link_island(
+        risers=_risers(("20a", 1), ("22a", 1)),
+        links=[{"ref": "LK1", "level": 1,
+                "connects": ["20a", "22a"]}]))
+    assert _link_rule(v, "link stray pin") == []
+    assert [x for x in v if x.severity == "error"] == []
+
+
+def test_unlisted_position_over_a_riser_is_a_stray_pin():
+    """B15 — the one way this system bites. The riser at 21a was put
+    there for something else; the bar's own pin now bonds it in."""
+    _d, v, _t = build(_link_island(
+        risers=_risers(("20a", 1), ("21a", 1), ("22a", 1)),
+        links=[{"ref": "LK1", "level": 1,
+                "connects": ["20a", "22a"]}]))
+    hits = _link_rule(v, "link stray pin")
+    assert len(hits) == 1 and "21a" in hits[0], hits
+    assert [x for x in v if x.rule == "link stray pin"][0].severity \
+        == "error"
+
+
+def test_clipping_the_stray_pin_silences_it():
+    _d, v, _t = build(_link_island(
+        risers=_risers(("20a", 1), ("21a", 1), ("22a", 1)),
+        links=[{"ref": "LK1", "level": 1,
+                "connects": ["20a", "22a"], "clipped": ["21a"]}]))
+    assert _link_rule(v, "link stray pin") == []
+
+
+def test_declaring_the_stray_pin_silences_it_and_bonds_it():
+    """The other honest answer: you did mean it, so say so."""
+    design, v, _t = build(_link_island(
+        risers=_risers(("20a", 1), ("21a", 1), ("22a", 1)),
+        links=[{"ref": "LK1", "level": 1,
+                "connects": ["20a", "21a", "22a"]}]))
+    assert _link_rule(v, "link stray pin") == []
+    nets = {design.nid_of_key[("row", "bb1", r, "L")] for r in (20, 21, 22)}
+    assert len(nets) == 1
+
+
+def test_link_cut_longer_than_stock_warns():
+    """B16 — electrically fine, just not buildable from that bag."""
+    _d, v, _t = build(_link_island(
+        risers=_risers(("20a", 1), ("24a", 1)),
+        links=[{"ref": "LK1", "level": 1, "connects": ["20a", "24a"],
+                "clipped": ["21a", "22a", "23a"], "stock": 3}]))
+    hits = _link_rule(v, "link stock")
+    assert len(hits) == 1 and "spans 5" in hits[0], hits
+    assert [x for x in v if x.rule == "link stock"][0].severity == "warning"
+
+
+def test_link_within_stock_is_silent():
+    _d, v, _t = build(_link_island(
+        risers=_risers(("20a", 1), ("22a", 1)),
+        links=[{"ref": "LK1", "level": 1, "connects": ["20a", "22a"],
+                "clipped": ["21a"], "stock": 5}]))
+    assert _link_rule(v, "link stock") == []

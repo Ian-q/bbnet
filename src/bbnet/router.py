@@ -248,6 +248,13 @@ class _IslandRouter:
         # the board, but the pin is IN it.
         for r in getattr(isl, "risers", ()):
             occupy(r.at)
+        # A bar's body covers every slot it spans, at ITS level — not the
+        # surface. That is the point: the board underneath stays free for
+        # routing, which is why building upward buys anything at all.
+        for lk in getattr(isl, "links", ()):
+            self._claim_span(lk.level,
+                             {(lat.x_of(a.hole), a.row)
+                              for a in lk.positions})
         for j in isl.jumpers + isl.interlinks:
             occupy(j.a)
             occupy(j.b)

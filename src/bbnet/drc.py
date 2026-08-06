@@ -25,6 +25,11 @@ Rules (each encodes a real breadboard bug class):
                    only remaining holes are taken or under a part body —
                    pin the hole, and say `underside: true` if the module
                    is sitting on it (needs routed geometry)
+  B14 link support  a link bar bonded at a position with no riser
+                   reaching its level: the bar cannot land there
+  B15 link stray pin  an unclipped bar position the author never listed
+                   as connected, sitting on a riser — the pin is bonding
+                   a net into the bar that nobody asked it to
 """
 from __future__ import annotations
 
@@ -677,8 +682,85 @@ def rule_halfrow_landing(design, rules, colours, routed=None):
     return out
 
 
+def rule_link_support(design, rules, colours):
+    """B14: a link bar bonded where it cannot actually land.
+
+    A bar sits on risers. A `connects:` position with no riser reaching
+    the bar's level has nothing to plug into, so the netlist claims a
+    bond the hardware does not have — the worst kind of model error,
+    because everything downstream believes it."""
+    out = []
+    for iname in sorted(design.islands):
+        isl = design.islands[iname]
+        sockets = isl.sockets()
+        for lk in isl.links:
+            for a in lk.connects:
+                have = sockets.get((a.row, a.half, a.hole), ())
+                if lk.level not in have:
+                    at = f"level {lk.level}"
+                    got = (f"only {sorted(have)}" if have
+                           else "no riser at all")
+                    out.append(Violation(
+                        "link support", "error",
+                        f"{iname}: {lk.ref} bonds at {a.row}{a.hole} "
+                        f"({at}) but that hole has {got} — add "
+                        f"`risers: [{{at: {a.row}{a.hole}, "
+                        f"level: {lk.level}}}]` or move the bar"))
+    return out
+
+
+def rule_link_stray_pin(design, rules, colours):
+    """B15: a bar pin bonding a net nobody asked it to.
+
+    Every position on a 1xN bar is the same conductor, and all N pins
+    physically exist whether or not the design wanted them. A position
+    the author listed under neither `connects:` nor `clipped:` is a
+    float — fine, and the common case, because a pin with no riser
+    beneath it hangs in free air touching nothing.
+
+    Put a riser under that float, though, and the pin lands: the hole's
+    net is now bonded into the bar, silently, by a pin whose only reason
+    for existing is that the bar was sold that long. That is the one way
+    this system bites, so it is an error. Snip the pin (`clipped:`) or
+    say you meant it (`connects:`)."""
+    out = []
+    for iname in sorted(design.islands):
+        isl = design.islands[iname]
+        sockets = isl.sockets()
+        for lk in isl.links:
+            for a in lk.floats():
+                if lk.level in sockets.get((a.row, a.half, a.hole), ()):
+                    out.append(Violation(
+                        "link stray pin", "error",
+                        f"{iname}: {lk.ref} covers {a.row}{a.hole} "
+                        f"without listing it, and a riser there reaches "
+                        f"level {lk.level} — that pin bonds "
+                        f"{a.row}{a.hole} into the bar. Add it to "
+                        f"`connects:` if you meant it, else `clipped:`"))
+    return out
+
+
+def rule_link_stock(design, rules, colours):
+    """B16: a bar cut longer than the stock it is cut from.
+
+    A purchasing fact rather than a wiring fault, hence a warning: the
+    design is electrically fine, you just cannot build it out of the bag
+    you have."""
+    out = []
+    for iname in sorted(design.islands):
+        isl = design.islands[iname]
+        for lk in isl.links:
+            if lk.stock and lk.length > lk.stock:
+                out.append(Violation(
+                    "link stock", "warning",
+                    f"{iname}: {lk.ref} spans {lk.length} positions but "
+                    f"stock is 1x{lk.stock} — bars cut DOWN, not up; "
+                    f"buy longer stock or split the run"))
+    return out
+
+
 def run_all(design, rules, colours, routed=None):
-    """Run every rule -> (violations, todos), stable order B1..B13.
+    """Run every rule -> (violations, todos), stable order B1..B16.
 
     `routed` (island -> (wires, stats, lattice) from router.route_design)
     enables the geometry-dependent rules; without it B12 and B13 are
@@ -687,7 +769,8 @@ def run_all(design, rules, colours, routed=None):
     for rule in (rule_occupancy, rule_rails, rule_signal_short,
                  rule_colour, rule_pinmap_xcheck, rule_passive_span,
                  rule_passive_overlap, rule_cap_polarity,
-                 rule_voltage_rating):
+                 rule_voltage_rating, rule_link_support,
+                 rule_link_stray_pin, rule_link_stock):
         violations.extend(rule(design, rules, colours))
     violations.extend(rule_in_node_detour(design, rules, colours, routed))
     violations.extend(rule_halfrow_landing(design, rules, colours, routed))

@@ -58,6 +58,47 @@ DEVICE_KINDS = frozenset(DEVICE_PINOUTS)
 SIDE_LEVELS = {"top": 0, "bottom": -1}
 
 
+def link_positions(addrs, where):
+    """Every slot a bar spanning `addrs` physically covers, in order.
+
+    A bar is rigid and straight, so its slots are contiguous along one
+    axis: either across a row (`20a`..`20e`, within one half — the
+    ravine is a gap no bar bridges without leaving the grid) or down a
+    hole column (`20a`..`24a`). Anything else is not a shape a 1xN part
+    can take, and saying so here beats discovering it at the bench."""
+    if len(addrs) < 2:
+        raise ModelError(f"{where}: a link spans at least two positions")
+    for a in addrs:
+        if not isinstance(a, HoleAddr) or not a.hole:
+            raise ModelError(
+                f"{where}: link position {a} must name a hole "
+                "(`20a`), not a half-row or a rail")
+    if len({a.island for a in addrs}) != 1:
+        raise ModelError(f"{where}: a link cannot span two islands")
+
+    rows = {a.row for a in addrs}
+    cols = {(a.half, a.hole) for a in addrs}
+    if len(rows) == 1:
+        half = {a.half for a in addrs}
+        if len(half) != 1:
+            raise ModelError(
+                f"{where}: link spans the ravine — a rigid bar cannot "
+                "cross it, use two bars and a jumper")
+        holes = LEFT_HOLES if addrs[0].half == "L" else RIGHT_HOLES
+        idx = sorted(holes.index(a.hole) for a in addrs)
+        row, half = addrs[0].row, addrs[0].half
+        return [HoleAddr(addrs[0].island, row, half, holes[i])
+                for i in range(idx[0], idx[-1] + 1)]
+    if len(cols) == 1:
+        half, hole = cols.pop()
+        lo, hi = min(rows), max(rows)
+        return [HoleAddr(addrs[0].island, r, half, hole)
+                for r in range(lo, hi + 1)]
+    raise ModelError(
+        f"{where}: link positions are not in one line — a bar runs "
+        "along a row or down a hole column, not diagonally")
+
+
 def level_of(spec, where):
     """Resolve `side:` and `level:` on one placed part to a single level.
 
@@ -236,6 +277,56 @@ class Riser:
     note: str = ""
 
 
+LINK_FABS = ("pcb-rail", "bent-wire")
+
+
+@dataclass
+class Link:
+    """A rigid 1xN bar plugged into risers at one level — the thing that
+    replaces a fistful of jumpers with one exact-length part.
+
+    All N positions are ONE conductor, which is what makes a bar useful
+    (a single 3V3 tap fans out to five things) and also what makes it
+    dangerous: the pins you did not want still physically exist. Each
+    position is therefore one of three things, and the YAML has to say
+    which, because only intent distinguishes a deliberate fan-out from
+    an accidental short:
+
+      connect  bonded on purpose; needs a riser reaching `level`
+      clip     pin snipped off; touches nothing, needs nothing
+      float    pin present, no riser beneath — hangs in free air
+
+    `positions` holds every slot the bar physically covers, in order,
+    including the floats the author never mentioned."""
+    ref: str
+    level: int
+    positions: list        # [HoleAddr] every slot, in order
+    connects: list         # [HoleAddr] bonded on purpose
+    clipped: list          # [HoleAddr] pins removed
+    island: str
+    stock: int = 0         # positions per bar as bought (0 = unstated)
+    fab: str = "pcb-rail"
+    note: str = ""
+
+    @property
+    def length(self):
+        return len(self.positions)
+
+    def floats(self):
+        named = {(a.row, a.half, a.hole)
+                 for a in self.connects + self.clipped}
+        return [a for a in self.positions
+                if (a.row, a.half, a.hole) not in named]
+
+    def terminals(self):
+        """Only the bonded positions carry the net. A clipped pin is not
+        there and a floating one touches nothing, so neither belongs in
+        the netlist — but both stay in `positions` because the DRC and
+        the kitting sheet still have to account for them."""
+        return [Terminal(f"p{i + 1}", a, 0)
+                for i, a in enumerate(self.connects)]
+
+
 @dataclass
 class Terminal:
     """One leg of a placed part.
@@ -317,6 +408,7 @@ class Island:
     schema_version: int = SCHEMA_VERSION
     devices: list[Device] = field(default_factory=list)
     risers: list[Riser] = field(default_factory=list)
+    links: list[Link] = field(default_factory=list)
 
     def sockets(self):
         """(row, half, hole) -> set of levels reachable there.
@@ -342,6 +434,12 @@ class Island:
             yield q, [Terminal("a", q.a, 0), Terminal("b", q.b, 1)]
         for dv in self.devices:
             yield dv, list(dv.terminals)
+        # A link bar is not a special case in here — it is a group whose
+        # terminals all share net_index 0, which is exactly what "one
+        # conductor across N positions" means. Derivation needs no
+        # branch for it.
+        for lk in self.links:
+            yield lk, lk.terminals()
 
 
 # ---------------------------------------------------------------- panels
@@ -588,6 +686,46 @@ def island_from(d, parts_lib):
                             str(rs.get("kind", "stacking-header")),
                             str(rs.get("note", ""))))
 
+    links = []
+    for lk in d.get("links") or []:
+        ref = lk.get("ref", "?")
+        where = f"{name}.{ref}"
+        level = lk.get("level")
+        if not isinstance(level, int) or isinstance(level, bool):
+            raise ModelError(f"{where}: level {level!r} must be an integer")
+        if level == 0:
+            raise ModelError(
+                f"{where}: level 0 is the board surface — a bar sitting "
+                "flat on the board is a jumper, write it under `jumpers:`")
+        connects = [ep(x) for x in (lk.get("connects") or [])]
+        clipped = [ep(x) for x in (lk.get("clipped") or [])]
+        if len(connects) < 2:
+            raise ModelError(
+                f"{where}: a link needs at least two `connects:` — one "
+                "bonded position is a riser with a bar balanced on it")
+        # Clipped positions extend the span like bonded ones do: snipping
+        # a pin does not shorten the PCB it was on, so an end position
+        # with its pin removed still says how long the bar is.
+        positions = link_positions(connects + clipped, where)
+        both = ({(a.row, a.half, a.hole) for a in connects}
+                & {(a.row, a.half, a.hole) for a in clipped})
+        if both:
+            at = ", ".join(f"{r}{h}" for r, _hf, h in sorted(both))
+            raise ModelError(
+                f"{where}: position(s) {at} are listed as BOTH connected "
+                "and clipped — a snipped pin cannot carry the net")
+        fab = str(lk.get("fab", "pcb-rail"))
+        if fab not in LINK_FABS:
+            raise ModelError(f"{where}: fab {fab!r} not in "
+                             f"{list(LINK_FABS)}")
+        stock = lk.get("stock", 0)
+        if not isinstance(stock, int) or isinstance(stock, bool) \
+                or stock < 0:
+            raise ModelError(f"{where}: stock {stock!r} must be a "
+                             "non-negative integer (positions per bar)")
+        links.append(Link(ref, level, positions, connects, clipped,
+                          name, stock, fab, str(lk.get("note", ""))))
+
     jumpers = [Jumper(ep(j["from"]), ep(j["to"]), str(j.get("colour", "")),
                       str(j.get("note", "")), name,
                       (str(j["pair"]) if j.get("pair") else None),
@@ -611,7 +749,7 @@ def island_from(d, parts_lib):
                   (bool(rb) if rb is not None else None),
                   parts, passives, jumpers, leads, inter,
                   [str(x) for x in (d.get("bench_only") or [])],
-                  sv, devices, risers)
+                  sv, devices, risers, links)
 
 
 # -------------------------------------------------------------- derivation
