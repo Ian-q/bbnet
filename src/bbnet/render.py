@@ -952,10 +952,17 @@ def _lead_glyph(add, px, w, colour, title):
         f'<title>{esc(title)}</title></path>')
 
 
-def _edge_labels(add, px, w, lattice, label_y, print_side, room_on, gx,
+def _edge_labels(px, w, lattice, label_y, print_side, room_on, gx,
                  label_px):
     """The off-board text for whichever of this wire's ends land on a
-    board edge."""
+    board edge — DEFERRED like every other label.
+
+    On a wide seam these print inside the shared gutter rather than
+    flipping to the outer margin, and the panel draws its stitched
+    interlinks through that same gutter afterwards. The halo here was
+    always a half-measure against that: it survives a thin stroke
+    crossing the glyphs, not an opaque 7.4px casing painted on top."""
+    out = []
     ends = [wpt for wpt in (w.path[0], w.path[-1])
             if lattice.is_edge(wpt.x)]
     for e in ends:
@@ -980,8 +987,9 @@ def _edge_labels(add, px, w, lattice, label_y, print_side, room_on, gx,
         # the stitched wires' lanes run right over it
         halo = ' class="lead lyr-label halo"' if label_px else \
             ' class="lead lyr-label"'
-        add(f'<text x="{round(lx, 1)}" y="{ly}"{halo}'
-            f'{anchor}>{esc(shown)}{tip}</text>')
+        out.append(f'<text x="{round(lx, 1)}" y="{ly}"{halo}'
+                   f'{anchor}>{esc(shown)}{tip}</text>')
+    return out
 
 
 def _end_pucks(add, px, island, w, lattice, colour, title, jx, jy, fly, gx,
@@ -1038,11 +1046,13 @@ def _wire_layer(add, px, island, wires, lattice, label_px, rail_tints):
     a ghost bus past the edge. Each wire is one group so click-to-
     highlight can isolate it.
 
-    Returns the edge-label lanes, because a crowded side can stack
-    labels below the last row and only the caller can grow the canvas."""
+    Returns the edge-label lanes — a crowded side can stack labels
+    below the last row and only the caller can grow the canvas — and the
+    edge labels themselves, for the caller's label layer."""
     label_y, print_side, room_on = _edge_label_lanes(
         px, wires, lattice, label_px)
     co_run = _co_run_keys(wires)
+    edge_labels = []
     ghost_rows = {}     # side -> [y px] of interlink ghost-bus landings
     for w in wires:
         colour = WIRE_COLOURS.get(w.colour, WIRE_COLOURS[""])
@@ -1072,13 +1082,13 @@ def _wire_layer(add, px, island, wires, lattice, label_px, rail_tints):
         _pipe_segments(add, w, pts, colour, jx, jy, fly, title)
         if fly and w.kind == "lead" and w.path:
             _lead_glyph(add, px, w, colour, title)
-        _edge_labels(add, px, w, lattice, label_y, print_side, room_on,
-                     gx, label_px)
+        edge_labels += _edge_labels(px, w, lattice, label_y, print_side,
+                                    room_on, gx, label_px)
         _end_pucks(add, px, island, w, lattice, colour, title, jx, jy,
                    fly, gx, rail_tints)
         add('</g>')
     _ghost_buses(add, px, ghost_rows)
-    return label_y
+    return label_y, edge_labels
 
 
 def island_body(island, wires, stats, lattice, skip_links=(),
@@ -1112,10 +1122,11 @@ def island_body(island, wires, stats, lattice, skip_links=(),
     labels = _parts(add, px, island)
     labels += _passives(add, px, island, rail_tints, badges, writable)
     labels += _level_layer(add, px, island, badges, writable)
-    label_y = _wire_layer(
+    label_y, edge_labels = _wire_layer(
         add, px, island,
         [w for w in wires if not (w.link and w.link in skip_links)],
         lattice, label_px, rail_tints)
+    labels += edge_labels
 
     # The label layer, painted last. Everything here names something —
     # a value, a pin, a row — and the sheet is unusable if a pipe lands
