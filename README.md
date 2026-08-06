@@ -208,6 +208,12 @@ leaving one unplaced, is an **error** — on a part whose legs are not
 interchangeable, a mistyped leg is a wiring bug the netlist would
 otherwise absorb without complaint.
 
+Write whatever you like in a device's `value:` — the build sheet shows
+the ref plus as much of the value as fits on a badge, breaking at a word
+boundary, and puts the whole string on the part's hover title. It is a
+good place for the reason a part is there; it is not a place that has to
+stay short.
+
 ### Switched sets: the de-energized-state rule
 
 Switches, relay contacts and transistor channels connect *conditionally*.
