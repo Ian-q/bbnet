@@ -48,14 +48,66 @@ DEVICE_PINOUTS = {
     "bjt":       ("B", "C", "E"),
     "regulator": ("IN", "GND", "OUT"),
     "pot":       ("A", "W", "B"),
+    "switch":    ("A", "B"),
+    "relay":     ("A1", "A2", "COM", "NO", "NC"),
 }
 DEVICE_KINDS = frozenset(DEVICE_PINOUTS)
+
+# Terminals whose connection depends on state, and the state they are in
+# when nothing is driving them: kind -> ((pins, default), ...).
+#
+# The derived netlist is the DE-ENERGIZED state. That is a deliberate
+# convention and it earns its keep: de-energized is exactly what a
+# multimeter reads on an unpowered board, so the netlist stays
+# continuity-testable against the hardware. A netlist you cannot check
+# against the thing on the bench is worth much less.
+#
+# A relay's coil is not in here — it is always its own pair, energized or
+# not. A MOSFET/BJT channel is: enhancement-mode parts are off with no
+# gate drive, which is why their D-S and C-E default open.
+SWITCHED_SETS = {
+    "switch": ((("A", "B"), "open"),),
+    "relay":  ((("COM", "NC"), "closed"), (("COM", "NO"), "open")),
+    "mosfet": ((("D", "S"), "open"),),
+    "bjt":    ((("C", "E"), "open"),),
+}
+SWITCH_STATES = ("open", "closed")
 
 # The board surface is level 0 and the underside is level -1, so the
 # older `side: top|bottom` is just a coarser spelling of `level`. Keeping
 # both spellings working matters: every island YAML written so far says
 # `side`, and underside mounting is still the right answer sometimes.
 SIDE_LEVELS = {"top": 0, "bottom": -1}
+
+
+def device_indices(kind, pinout, normally, where):
+    """pin -> net_index for one device, with switched sets resolved.
+
+    Every pin starts on its own net. A switched set that is CLOSED in
+    the de-energized state merges its pins onto one, which is how a
+    normally-closed switch ends up being a piece of wire as far as the
+    netlist is concerned — because on the unpowered bench, it is."""
+    idx = {p: i for i, p in enumerate(pinout)}
+    sets = SWITCHED_SETS.get(kind, ())
+    if normally is not None:
+        if kind != "switch":
+            raise ModelError(
+                f"{where}: `normally:` only applies to a switch — a "
+                f"{kind}'s de-energized state is a property of the part, "
+                "not a choice")
+        if normally not in SWITCH_STATES:
+            raise ModelError(f"{where}: normally {normally!r} not in "
+                             f"{list(SWITCH_STATES)}")
+    for pins, default in sets:
+        state = normally if (normally and kind == "switch") else default
+        if state != "closed":
+            continue
+        keep = min(idx[p] for p in pins)
+        merged = {idx[p] for p in pins}
+        for p, i in list(idx.items()):
+            if i in merged:
+                idx[p] = keep
+    return idx
 
 
 def link_positions(addrs, where):
@@ -358,6 +410,7 @@ class Device:
     side: str = "top"
     rating: str = ""
     level: int = 0
+    normally: str = ""   # switches only: the state the netlist assumes
 
     def addr_of(self, pin):
         for t in self.terminals:
@@ -660,11 +713,15 @@ def island_from(d, parts_lib):
         if missing:
             raise ModelError(f"{name}.{ref}: {kind} leaves pin(s) "
                              f"{missing} unplaced — expected {list(pinout)}")
-        terminals = [Terminal(p, ep(placed[p]), i)
-                     for i, p in enumerate(pinout)]
+        normally = dv.get("normally")
+        idx = device_indices(kind, pinout,
+                             (str(normally) if normally else None),
+                             f"{name}.{ref}")
+        terminals = [Terminal(p, ep(placed[p]), idx[p]) for p in pinout]
         devices.append(Device(ref, kind, str(dv.get("value", "")),
                               terminals, name, side,
-                              str(dv.get("rating", "")), level))
+                              str(dv.get("rating", "")), level,
+                              (str(normally) if normally else "")))
 
     risers = []
     for rs in d.get("risers") or []:
@@ -940,7 +997,12 @@ def derive(islands, signals):
                     uf.union(by_index[t.net_index], key)
                 else:
                     by_index[t.net_index] = key
-            if len(terminals) == 2 and len(by_index) == 2:
+            # `edges` is the two-ended view the geometry rules walk, so
+            # only genuine two-terminal passives belong in it. An OPEN
+            # two-pin switch also has two terminals on two nets, but it
+            # is not a body with legs either side and must not be handed
+            # to B8/B10/B11 as though it were.
+            if isinstance(part, Passive) and len(by_index) == 2:
                 passive_recs.append((part, keys[0], keys[1]))
             else:
                 device_recs.append((part, terminals, keys))

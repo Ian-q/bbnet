@@ -890,3 +890,120 @@ def test_link_within_stock_is_silent():
         links=[{"ref": "LK1", "level": 1, "connects": ["20a", "22a"],
                 "clipped": ["21a"], "stock": 5}]))
     assert _link_rule(v, "link stock") == []
+
+
+# ------------------------------------- B17 switched sets / level-aware B9
+
+SW_RAILS = {"top+": "5V", "top-": "GND", "bot+": "3V3", "bot-": "GND"}
+
+
+def _sw_island(**over):
+    d = {"island": "bb1", "board": "full-830", "rails": dict(SW_RAILS)}
+    d.update(over)
+    return d
+
+
+def test_normally_closed_switch_is_wire_in_the_derived_netlist():
+    """The de-energized-state rule. On an unpowered board an NC switch
+    IS a piece of wire, which is what a multimeter would tell you — so
+    the netlist says the same thing."""
+    design, _v, _t = build(_sw_island(devices=[
+        {"ref": "SW1", "kind": "switch", "normally": "closed",
+         "pins": {"A": "20a", "B": "24a"}}]))
+    nids = design.device_nids["SW1"]
+    assert nids["A"] == nids["B"]
+
+
+def test_normally_open_switch_keeps_its_sides_apart():
+    design, _v, _t = build(_sw_island(devices=[
+        {"ref": "SW1", "kind": "switch", "normally": "open",
+         "pins": {"A": "20a", "B": "24a"}}]))
+    nids = design.device_nids["SW1"]
+    assert nids["A"] != nids["B"]
+
+
+def test_relay_contacts_follow_their_physical_default():
+    """COM-NC is closed with the coil unpowered and COM-NO is not; that
+    is a property of the part, not a choice."""
+    design, _v, _t = build(_sw_island(devices=[
+        {"ref": "K1", "kind": "relay",
+         "pins": {"A1": "20a", "A2": "21a", "COM": "22a",
+                  "NO": "23a", "NC": "24a"}}]))
+    n = design.device_nids["K1"]
+    assert n["COM"] == n["NC"], "COM-NC is closed de-energized"
+    assert n["COM"] != n["NO"]
+    assert n["A1"] != n["A2"], "the coil is its own pair either way"
+    assert n["A1"] != n["COM"], "coil is isolated from the contacts"
+
+
+def test_mosfet_channel_defaults_open():
+    """Enhancement-mode parts are off with no gate drive, so D and S
+    stay on separate nets."""
+    design, _v, _t = build(_sw_island(devices=[
+        {"ref": "Q1", "kind": "mosfet", "value": "2N7000",
+         "pins": {"G": "20a", "D": "21a", "S": "22a"}}]))
+    n = design.device_nids["Q1"]
+    assert len({n["G"], n["D"], n["S"]}) == 3
+
+
+def test_normally_only_applies_to_a_switch():
+    with pytest.raises(ModelError, match="only applies to a switch"):
+        build(_sw_island(devices=[
+            {"ref": "Q1", "kind": "mosfet", "normally": "closed",
+             "pins": {"G": "20a", "D": "21a", "S": "22a"}}]))
+
+
+def test_normally_must_be_open_or_closed():
+    with pytest.raises(ModelError, match="normally"):
+        build(_sw_island(devices=[
+            {"ref": "SW1", "kind": "switch", "normally": "maybe",
+             "pins": {"A": "20a", "B": "24a"}}]))
+
+
+def test_closed_switch_bridging_two_rails_warns():
+    """B17. Closed with nothing driving it, between 5V and 3V3 — the
+    board is shorted the moment it is powered, before any firmware runs
+    and before anything can open the contact."""
+    _d, v, _t = build(_sw_island(
+        devices=[{"ref": "SW1", "kind": "switch", "normally": "closed",
+                  "pins": {"A": "20a", "B": "24a"}}],
+        jumpers=[{"from": "20b", "to": "rail:top+", "colour": "RED"},
+                 {"from": "24b", "to": "rail:bot+", "colour": "RED"}]))
+    hits = [x for x in v if x.rule == "closed-by-default"]
+    assert len(hits) == 1, [x.message for x in v]
+    assert "3V3 + 5V" in hits[0].message
+    assert hits[0].severity == "warning"
+
+
+def test_open_switch_between_two_rails_is_silent():
+    """Same wiring, switch open — that is just a user-operated link."""
+    _d, v, _t = build(_sw_island(
+        devices=[{"ref": "SW1", "kind": "switch", "normally": "open",
+                  "pins": {"A": "20a", "B": "24a"}}],
+        jumpers=[{"from": "20b", "to": "rail:top+", "colour": "RED"},
+                 {"from": "24b", "to": "rail:bot+", "colour": "RED"}]))
+    assert [x for x in v if x.rule == "closed-by-default"] == []
+
+
+def test_bodies_crossing_at_different_levels_do_not_collide():
+    """B9 made correct rather than weaker. Crossing at different heights
+    is the entire point of building upward; flagging it would fight the
+    design it exists to enable."""
+    crossing = dict(_sw_island(passives=[
+        {"ref": "R1", "kind": "resistor", "value": "1k",
+         "from": "20a", "to": "24a"},
+        {"ref": "R2", "kind": "resistor", "value": "1k",
+         "from": "22a", "to": "22e", "level": 1}]))
+    _d, v, _t = build(crossing)
+    assert [x for x in v if x.rule == "passive-overlap"] == []
+
+
+def test_bodies_crossing_at_the_same_level_still_collide():
+    same = dict(_sw_island(passives=[
+        {"ref": "R1", "kind": "resistor", "value": "1k",
+         "from": "20a", "to": "24a", "level": 1},
+        {"ref": "R2", "kind": "resistor", "value": "1k",
+         "from": "22a", "to": "22e", "level": 1}]))
+    _d, v, _t = build(same)
+    hits = [x for x in v if x.rule == "passive-overlap"]
+    assert len(hits) == 1 and "level 1" in hits[0].message, hits

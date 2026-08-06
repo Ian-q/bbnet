@@ -156,6 +156,10 @@ own index):
 | B14 link support | a link bar bonded at a position with no riser reaching its level — the bar cannot land there |
 | B15 link stray pin | an unclipped bar position the author never listed, sitting on a riser: the pin bonds a net nobody asked for |
 | B16 link stock | a bar cut longer than the stock it is cut from — a purchasing fact, so a warning |
+| B17 closed-by-default | a switched set closed with nothing driving it, tying two named rails together |
+
+B9 compares **level**, not just face: two bodies crossing at different
+heights is not a collision, it is what building upward is for.
 
 B12 and B13 measure **routed geometry**, not connectivity: they need the
 autorouter to have resolved a bare half-row like `40R` to the hole it
@@ -191,10 +195,37 @@ devices:
 ```
 
 Kinds and their pinouts: `mosfet` (G/D/S), `bjt` (B/C/E), `regulator`
-(IN/GND/OUT), `pot` (A/W/B). Naming a pin the pinout doesn't know, or
+(IN/GND/OUT), `pot` (A/W/B), `switch` (A/B), `relay`
+(A1/A2/COM/NO/NC). Naming a pin the pinout doesn't know, or
 leaving one unplaced, is an **error** — on a part whose legs are not
 interchangeable, a mistyped leg is a wiring bug the netlist would
 otherwise absorb without complaint.
+
+### Switched sets: the de-energized-state rule
+
+Switches, relay contacts and transistor channels connect *conditionally*.
+bbnet resolves them to one state — **the de-energized one**:
+
+| Part | Switched set | State with nothing driving it |
+|---|---|---|
+| `switch` | A–B | whatever `normally:` says |
+| `relay` | COM–NC / COM–NO | closed / open |
+| `mosfet` | D–S | open (enhancement mode) |
+| `bjt` | C–E | open |
+
+```yaml
+devices:
+  - {ref: SW1, kind: switch, normally: closed, pins: {A: 20a, B: 24a}}
+```
+
+A normally-closed switch is therefore literally a piece of wire in the
+derived netlist — because on an unpowered board, it *is*, and that's what
+a multimeter would tell you. **The netlist stays continuity-testable
+against the hardware**, which is worth more than modelling every state.
+
+`normally:` applies only to a switch; a relay's or a MOSFET's
+de-energized state is a property of the part, not a choice, so declaring
+one is an error rather than a silent override.
 
 Internally both forms are **terminal groups**: an ordered list of legs,
 each carrying a `net_index`, where terminals sharing an index are one
