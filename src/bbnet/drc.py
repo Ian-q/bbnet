@@ -200,8 +200,18 @@ def _pin_reqs(design, rules):
     """Expand rules['pins'] (incl. wildcards) -> [(ref, pin, req)] plus
     warnings for unknown refs/pins."""
     out, warnings = [], []
-    placed = {ref: part for isl in design.islands.values()
-              for part in isl.parts for ref in [part.ref]}
+    # Devices belong here as much as footprint parts do. A regulator's
+    # OUT wanting decoupling, or a MOSFET gate wanting a pull-down, is
+    # exactly the shape rules.yaml exists for — and leaving devices out
+    # would silently STOP enforcing a requirement the moment a part was
+    # retyped from `parts:` to `devices:`, which is the quiet-wrong-
+    # answer failure this engine refuses everywhere else.
+    placed = {}
+    for isl in design.islands.values():
+        for part in isl.parts:
+            placed[part.ref] = list(part.pins)
+        for dv in isl.devices:
+            placed[dv.ref] = [t.name for t in dv.terminals]
     for key, reqs in (rules.get("pins") or {}).items():
         ref, _, pin = key.partition(".")
         if ref not in placed:
@@ -209,9 +219,9 @@ def _pin_reqs(design, rules):
                 "requirements", "warning",
                 f"rules.yaml: {key}: ref {ref!r} not on the bench"))
             continue
-        pins = list(placed[ref].pins) if pin == "*" else [pin]
+        pins = list(placed[ref]) if pin == "*" else [pin]
         for p in pins:
-            if p not in placed[ref].pins:
+            if p not in placed[ref]:
                 warnings.append(Violation(
                     "requirements", "warning",
                     f"rules.yaml: {key}: {ref} has no placed pin {p!r}"))
