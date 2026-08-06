@@ -286,3 +286,39 @@ def test_lane_offsets_keep_the_grid_phase():
     dx, dy = render._jitter("some-wire-key")
     assert dx == int(dx) and dy == int(dy)
     assert render.LANE * 2 > 6.5, "co-run separation must clear the casing"
+
+
+# ------------------------------------------------------------ layer stack
+
+# The island is painted back to front, and the ORDER is a contract, not
+# a detail: SVG has no z-index, so "above" means "later in the
+# document". Every one of these pairs is a legibility decision someone
+# made and could silently undo by moving one call in island_body().
+PAINT_ORDER = [
+    ('class="ttl"', "board frame + title"),
+    ('class="rail"', "rail bands"),
+    ('class="rn"', "hole grid + row numbers"),
+    ('class="cn"', "column letters"),
+    ('class="lyr-part"', "footprint parts"),
+    ('<g class="wire lyr-passive" data-w=', "passive bodies"),
+    ('class="lyr-level"', "the level stack, above what it stands on"),
+    ('<g class="wire" data-w=', "routed wires, over the board art"),
+    ('class="wire lyr-passive lyr-label"', "value badges, over the pipes"),
+]
+
+
+def test_island_body_paints_layers_back_to_front():
+    """island_body() reads as its layer stack. Assert the stack rather
+    than trusting the read: a wire layer painted before the parts would
+    put every pipe UNDER the part bodies, and nothing else in the suite
+    would notice — the fixture artefacts would just quietly regenerate
+    to the new, wrong picture."""
+    svg = _left_svg()
+    seen = []
+    for marker, what in PAINT_ORDER:
+        i = svg.find(marker)
+        assert i >= 0, f"{what} missing from the island body ({marker})"
+        seen.append((i, what))
+    assert seen == sorted(seen), (
+        "layers out of paint order: "
+        + " then ".join(w for _i, w in sorted(seen)))
