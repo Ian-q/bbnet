@@ -1007,3 +1007,42 @@ def test_bodies_crossing_at_the_same_level_still_collide():
     _d, v, _t = build(same)
     hits = [x for x in v if x.rule == "passive-overlap"]
     assert len(hits) == 1 and "level 1" in hits[0].message, hits
+
+
+def test_requirements_see_device_pins():
+    """A regulator's OUT wanting decoupling is exactly the shape
+    rules.yaml exists for. Leaving devices out of the ref table would
+    silently STOP enforcing a requirement the moment a part was retyped
+    from `parts:` to `devices:` — a migration that changes no holes
+    must not change what is checked."""
+    isl = dict(_sw_island(
+        devices=[{"ref": "U2", "kind": "regulator",
+                  "pins": {"IN": "20a", "GND": "21a", "OUT": "22a"},
+                  "seeds": {"OUT": "3V3"}}]))
+    rules = dict(EMPTY_RULES,
+                 pins={"U2.OUT": [{"decouple": {"to": "GND",
+                                                "kind": ["ceramic"]}}]})
+    _d, v, todos = build(isl, rules=rules)
+    assert not [x for x in v if "not on the bench" in x.message], \
+        [x.message for x in v]
+    assert [t for t in todos if t.pin == "U2.OUT"], \
+        "the unmet decouple requirement must still surface as a todo"
+
+
+def test_requirements_wildcard_expands_over_device_pins():
+    isl = dict(_sw_island(
+        devices=[{"ref": "Q9", "kind": "mosfet",
+                  "pins": {"G": "20a", "D": "21a", "S": "22a"}}]))
+    rules = dict(EMPTY_RULES, pins={"Q9.*": ["must-connect"]})
+    _d, v, _t = build(isl, rules=rules)
+    floating = [x.message for x in v if x.rule == "floating"]
+    assert len(floating) == 3, floating
+
+
+def test_requirement_on_an_unplaced_device_pin_still_warns():
+    isl = dict(_sw_island(
+        devices=[{"ref": "Q9", "kind": "mosfet",
+                  "pins": {"G": "20a", "D": "21a", "S": "22a"}}]))
+    rules = dict(EMPTY_RULES, pins={"Q9.GATE": ["must-connect"]})
+    _d, v, _t = build(isl, rules=rules)
+    assert [x for x in v if "no placed pin" in x.message]
