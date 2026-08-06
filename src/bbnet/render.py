@@ -163,12 +163,24 @@ def _edge_label_sides(wires, lattice, skip_links=()):
     return n
 
 
+LANE = 4.0
+
+
 def _jitter(key):
-    # lane offset ±3.4: two co-run pipes then sit 6.8px apart, just
-    # past the 6.5px casing reach (3.7 casing + 2.8 colour half-widths)
-    # so one pipe's casing can never bite into its neighbour
+    # Lane offset ±4.0, an INTEGER on purpose. Hole centres land on a
+    # half-pixel (MARGIN and every column width are whole numbers, and
+    # each centre picks up a +w/2), so a whole-number lane offset keeps
+    # every displaced pipe on that same half-pixel phase and it renders
+    # crisp instead of straddling two device pixels. The old 3.4 put
+    # displaced pipes on .9, which is why co-runs looked softer than the
+    # wires that happened not to move.
+    #
+    # Two co-run pipes now sit 8.0px apart, comfortably past the 6.5px
+    # casing reach (3.7 casing + 2.8 colour half-widths), so the
+    # separation guarantee the old value bought at 6.8 is strengthened,
+    # not traded away.
     h = zlib.crc32(key.encode("utf-8"))   # stable across processes
-    return ((h % 3) - 1) * 3.4, (((h >> 4) % 3) - 1) * 3.4
+    return ((h % 3) - 1) * LANE, (((h >> 4) % 3) - 1) * LANE
 
 
 def _co_run_keys(wires):
@@ -511,14 +523,35 @@ def island_body(island, wires, stats, lattice, skip_links=(),
     except (KeyError, ValueError):
         nx_l = px.x(hole_cols[0]) - 14      # rail-less boards: no gutter
         nx_r = px.x(hole_cols[-1]) + 14
+    # Every fifth row carries a full-width guide and a darker, bolder
+    # number. Counting holes by eye is the single most error-prone thing
+    # about working from a printed sheet, and an unbroken column of
+    # identical grey digits gives the eye nothing to land on — the
+    # decade lines are what let you find row 43 without counting.
     for r in range(1, lattice.rows + 1):
         y = px.y(r)
-        add(f'<text x="{round(nx_l, 1)}" y="{y+3}" class="rn" '
+        major = (r % 5 == 0)
+        if major:
+            add(f'<line x1="{round(nx_l + 6, 1)}" y1="{y}" '
+                f'x2="{round(nx_r - 6, 1)}" y2="{y}" stroke="#000" '
+                f'stroke-opacity="0.055" stroke-width="1"/>')
+        cls = "rn maj" if major else "rn"
+        add(f'<text x="{round(nx_l, 1)}" y="{y+3}" class="{cls}" '
             f'text-anchor="middle">{r}</text>')
-        add(f'<text x="{round(nx_r, 1)}" y="{y+3}" class="rn" '
+        add(f'<text x="{round(nx_r, 1)}" y="{y+3}" class="{cls}" '
             f'text-anchor="middle">{r}</text>')
         for xi in hole_cols:
             add(f'<circle cx="{px.x(xi)}" cy="{y}" r="1.6" fill="#c9c3b3"/>')
+
+    # Hole-column letters, top AND bottom. These did not exist before,
+    # which meant the one axis you address every wire by (`43h`) was the
+    # one the sheet never labelled — you counted columns from the ravine
+    # every time.
+    for xi in hole_cols:
+        letter = lattice.name(xi)
+        for yy in (HEAD - 6, px.height - 12):
+            add(f'<text x="{px.x(xi)}" y="{yy}" class="cn" '
+                f'text-anchor="middle">{esc(letter)}</text>')
 
     # parts
     for part in island.parts:
@@ -1115,7 +1148,9 @@ details.help summary{cursor:pointer;color:#7a7263}
 svg{background:#fff;border:1px solid #ddd;border-radius:10px}
 svg .ttl{font:700 14px ui-sans-serif}
 svg .sub{font:400 11px ui-sans-serif;fill:#888}
-svg .rn{font:9px ui-monospace;fill:#aaa}
+svg .rn{font:9px ui-monospace;fill:#7c766a}
+svg .rn.maj{font:bold 9.5px ui-monospace;fill:#3f3a31}
+svg .cn{font:bold 9.5px ui-monospace;fill:#3f3a31}
 svg .rail{font:700 9px ui-monospace}
 svg .part{fill:#2b3a4a;fill-opacity:.08;stroke:#2b3a4a;stroke-opacity:.55}
 svg .pin{font:8px ui-monospace;fill:#37474f}

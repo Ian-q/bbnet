@@ -589,3 +589,32 @@ def test_link_terminals_are_one_conductor():
     ts = isl.links[0].terminals()
     assert len(ts) == 3
     assert {t.net_index for t in ts} == {0}
+
+
+def test_device_pins_reach_net_of_pin():
+    """A device leg is a named pin like any other. Without this, a
+    MOSFET gate could not carry a rules.yaml requirement and
+    net_of_pin() would raise on it — which would make the bench's own
+    Q1/Q2 gate pull-downs unmodellable in the very release that added
+    MOSFETs."""
+    design = _derive(_dev_island(
+        devices=[dict(FET)],
+        jumpers=[{"from": "20b", "to": "rail:top+", "colour": "RED"}]))
+    assert design.net_of_pin("Q1", "G").name == "3V3"
+    assert design.net_of_pin("Q1", "D") is not None
+
+
+def test_a_jumper_can_address_a_device_pin():
+    design = _derive(_dev_island(
+        devices=[dict(FET)],
+        jumpers=[{"from": "Q1.G", "to": "rail:top+", "colour": "RED"}]))
+    assert design.net_of_pin("Q1", "G").name == "3V3"
+
+
+def test_device_ref_cannot_collide_with_a_part_ref():
+    """refs are one namespace because rules.yaml keys on bare refs and
+    cannot tell a part from a device."""
+    with pytest.raises(ModelError, match="duplicate|used in both"):
+        _derive(_dev_island(
+            parts=[{"ref": "Q1", "pins": {"P": "30a"}}],
+            devices=[dict(FET)]))
