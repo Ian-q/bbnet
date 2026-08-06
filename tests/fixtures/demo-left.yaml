@@ -30,3 +30,16 @@ leads:
   - {at: 50a, colour: YEL, net: 12V, label: 12V input}
 interlinks:
   - {from: 15j, to: 'demo-right:15a', colour: GRN, note: cross-board signal}
+# A worked 2.5D example so the shipped corpus exercises levels, not just
+# the flat board: a 3V3 tap fanned out at level 1 over a MOSFET that is
+# still lying on the surface underneath it. The bar's middle pins are
+# snipped, so B15 has nothing to say; the two it does land on have
+# risers reaching level 1, so B14 is satisfied too.
+risers:
+  - {at: 30a, level: 1}
+  - {at: 34a, level: 1, note: fan-out to the gate side}
+links:
+  - {ref: LK1, level: 1, connects: [30a, 34a], clipped: [31a, 32a, 33a],
+     stock: 5, fab: pcb-rail, note: 3V3 fan-out bar}
+devices:
+  - {ref: Q1, kind: mosfet, value: 2N7000, pins: {G: 36a, D: 37a, S: 38a}}
