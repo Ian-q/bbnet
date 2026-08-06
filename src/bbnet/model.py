@@ -33,7 +33,23 @@ class UnsupportedSchemaVersion(ModelError):
 
 
 CAP_KINDS = {"ceramic", "electrolytic", "tantalum", "film"}
-PASSIVE_KINDS = {"resistor", "diode", "led", "other"} | CAP_KINDS
+# Two-terminal inline parts, written as `passives:` with from/to. `other`
+# is the escape hatch for anything with two legs and no rule of its own.
+PASSIVE_KINDS = ({"resistor", "diode", "led", "inductor", "ferrite",
+                  "fuse", "other"} | CAP_KINDS)
+
+# Parts with more than two terminals, written as `devices:` with a named
+# `pins:` map. The pinout fixes the ORDER terminals are stored in and the
+# names the YAML must use — a device naming a pin outside its kind's
+# pinout is an error, because a mistyped leg on a three-legged part is a
+# wiring bug the netlist would otherwise absorb silently.
+DEVICE_PINOUTS = {
+    "mosfet":    ("G", "D", "S"),
+    "bjt":       ("B", "C", "E"),
+    "regulator": ("IN", "GND", "OUT"),
+    "pot":       ("A", "W", "B"),
+}
+DEVICE_KINDS = frozenset(DEVICE_PINOUTS)
 
 
 # ---------------------------------------------------------------- parts lib
@@ -170,6 +186,44 @@ class Passive:
 
 
 @dataclass
+class Terminal:
+    """One leg of a placed part.
+
+    `net_index` is what makes this general: terminals sharing an index
+    are ONE conductor inside the part. A resistor's two legs get 0 and 1
+    (two nets); a 1xN link bar's N pins all get 0 (one net). Everything
+    between those is expressible without the derivation caring which
+    kind of part it is looking at."""
+    name: str
+    addr: object
+    net_index: int
+
+
+@dataclass
+class Device:
+    """A placed part with more than two terminals.
+
+    Two-terminal parts keep their own `Passive` form (`from`/`to` reads
+    better than a pins map for a resistor, and every geometry rule that
+    exists today is inherently two-ended). Both feed ONE derivation path
+    via `terminal_groups()`, so a device's legs join nets by exactly the
+    same machinery as a passive's."""
+    ref: str
+    kind: str
+    value: str
+    terminals: list
+    island: str
+    side: str = "top"
+    rating: str = ""
+
+    def addr_of(self, pin):
+        for t in self.terminals:
+            if t.name == pin:
+                return t.addr
+        return None
+
+
+@dataclass
 class Jumper:
     a: object
     b: object
@@ -209,6 +263,21 @@ class Island:
     interlinks: list[Jumper]
     bench_only: list[str]
     schema_version: int = SCHEMA_VERSION
+    devices: list[Device] = field(default_factory=list)
+
+    def terminal_groups(self):
+        """Every inline part on this island as (part, [Terminal]) — the
+        ONE view derivation and DRC walk, so a three-legged device joins
+        nets by the same code that joins a resistor's two.
+
+        Passives are yielded as their two-terminal equivalent rather
+        than kept on a separate path; `a`/`b` become terminals 0 and 1,
+        which is exactly what they already mean. Both element types
+        carry ref/kind/value/rating, so callers need no isinstance."""
+        for q in self.passives:
+            yield q, [Terminal("a", q.a, 0), Terminal("b", q.b, 1)]
+        for dv in self.devices:
+            yield dv, list(dv.terminals)
 
 
 # ---------------------------------------------------------------- panels
@@ -408,6 +477,39 @@ def island_from(d, parts_lib):
                                 ep(q["from"]), ep(q["to"]), name, side,
                                 str(q.get("rating", ""))))
 
+    devices = []
+    for dv in d.get("devices") or []:
+        ref = dv.get("ref", "?")
+        kind = dv.get("kind")
+        if kind not in DEVICE_KINDS:
+            raise ModelError(
+                f"{name}.{ref}: device kind {kind!r} not in "
+                f"{sorted(DEVICE_KINDS)} — two-terminal parts go under "
+                "`passives:` with from/to, not here")
+        side = dv.get("side", "top")
+        if side not in ("top", "bottom"):
+            raise ModelError(f"{name}.{ref}: side {side!r} not "
+                             "'top' or 'bottom'")
+        pinout = DEVICE_PINOUTS[kind]
+        placed = {str(k): v for k, v in (dv.get("pins") or {}).items()}
+        # Both directions are errors, and for the same reason: on a part
+        # whose legs are not interchangeable, a name the pinout does not
+        # know (or a leg left unplaced) is a wiring mistake the netlist
+        # would otherwise absorb without complaint.
+        unknown = sorted(set(placed) - set(pinout))
+        if unknown:
+            raise ModelError(f"{name}.{ref}: {kind} has no pin(s) "
+                             f"{unknown} — expected {list(pinout)}")
+        missing = [p for p in pinout if p not in placed]
+        if missing:
+            raise ModelError(f"{name}.{ref}: {kind} leaves pin(s) "
+                             f"{missing} unplaced — expected {list(pinout)}")
+        terminals = [Terminal(p, ep(placed[p]), i)
+                     for i, p in enumerate(pinout)]
+        devices.append(Device(ref, kind, str(dv.get("value", "")),
+                              terminals, name, side,
+                              str(dv.get("rating", ""))))
+
     jumpers = [Jumper(ep(j["from"]), ep(j["to"]), str(j.get("colour", "")),
                       str(j.get("note", "")), name,
                       (str(j["pair"]) if j.get("pair") else None),
@@ -431,7 +533,7 @@ def island_from(d, parts_lib):
                   (bool(rb) if rb is not None else None),
                   parts, passives, jumpers, leads, inter,
                   [str(x) for x in (d.get("bench_only") or [])],
-                  sv)
+                  sv, devices)
 
 
 # -------------------------------------------------------------- derivation
@@ -469,6 +571,12 @@ class Design:
     hole_members: dict    # (island,row,half,hole) -> [member desc strings]
     nid_of_key: dict      # node_key -> nid
     signal_rows: list
+    # ref -> {terminal name -> nid}, for parts with more than two
+    # terminals. `edges` stays two-ended on purpose: every geometry rule
+    # it feeds (span, overlap, polarity, rating) is inherently about two
+    # legs and a body between them, and a three-legged part has no such
+    # single body axis to measure.
+    device_nids: dict = field(default_factory=dict)
 
     def net_by_id(self, nid):
         return self.nets[nid]
@@ -558,6 +666,7 @@ def derive(islands, signals):
         return _pm_cache[source]
 
     pin_key, jumper_recs, lead_recs, passive_recs = {}, [], [], []
+    device_recs = []
     for isl in islands.values():
         for pos, netname in isl.rails.items():
             key = RailAddr(isl.name, pos).node_key()
@@ -602,11 +711,23 @@ def derive(islands, signals):
                 seeds_at.setdefault(key, []).append(
                     (w.net, f"lead {w.label!r} @ {isl.name}", "lead"))
             lead_recs.append((w, key))
-        for q in isl.passives:
-            a, b = resolve(q.a, isl), resolve(q.b, isl)
-            ka = touch(a, f"{q.ref}.a")
-            kb = touch(b, f"{q.ref}.b")
-            passive_recs.append((q, ka, kb))
+        for part, terminals in isl.terminal_groups():
+            by_index, keys = {}, []
+            for t in terminals:
+                key = touch(resolve(t.addr, isl), f"{part.ref}.{t.name}")
+                keys.append(key)
+                # Terminals sharing a net_index are one conductor inside
+                # the part, so they merge here. Distinct indices stay
+                # apart: this loop is what keeps a MOSFET's three legs on
+                # three nets while a link bar's N pins collapse to one.
+                if t.net_index in by_index:
+                    uf.union(by_index[t.net_index], key)
+                else:
+                    by_index[t.net_index] = key
+            if len(terminals) == 2 and len(by_index) == 2:
+                passive_recs.append((part, keys[0], keys[1]))
+            else:
+                device_recs.append((part, terminals, keys))
 
     groups = {}
     for key in list(uf.parent):
@@ -651,7 +772,13 @@ def derive(islands, signals):
              for q, ka, kb in passive_recs]
     jumpers = [(j, nid_of_key[uf.find(k)]) for j, k in jumper_recs]
 
+    device_nids = {}
+    for part, terminals, keys in device_recs:
+        device_nids[part.ref] = {
+            t.name: nid_of_key[uf.find(k)]
+            for t, k in zip(terminals, keys)}
+
     return Design(islands, nets, edges, pin_nid, jumpers,
                   node_members, hole_members,
                   {k: nid_of_key[uf.find(k)] for k in uf.parent},
-                  signals.all_rows())
+                  signals.all_rows(), device_nids)

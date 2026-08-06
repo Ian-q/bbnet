@@ -159,6 +159,49 @@ autorouter to have resolved a bare half-row like `40R` to the hole it
 really uses. `check` and `report` route and so run them; `todo` and `bom`
 are connectivity-only and skip both the router and these two rules.
 
+## Inline parts: `passives:` and `devices:`
+
+Parts wired straight into the board (as opposed to modules with a
+footprint, which go under `parts:`) come in two forms, split by how many
+terminals they have.
+
+**Two terminals — `passives:`,** addressed `from`/`to`:
+
+```yaml
+passives:
+  - {ref: R1, kind: resistor,   value: 10k,  from: 20a, to: rail:top+}
+  - {ref: C1, kind: electrolytic, value: 100u, from: 21a, to: 21f, rating: 25V}
+  - {ref: L1, kind: inductor,   value: 10u,  from: 22a, to: 23a}
+```
+
+Kinds: `resistor`, `diode`, `led`, `inductor`, `ferrite`, `fuse`,
+`other`, plus the capacitors `ceramic` / `electrolytic` / `tantalum` /
+`film`. These land in `design.edges` and feed the geometry rules
+(B8 span, B9 overlap, B10 polarity, B11 rating).
+
+**More than two — `devices:`,** addressed by a named `pins:` map:
+
+```yaml
+devices:
+  - {ref: Q1, kind: mosfet, value: 2N7000, pins: {G: 20a, D: 21a, S: 22a}}
+  - {ref: RV1, kind: pot,   value: 10k,    pins: {A: 30a, W: 31a, B: 32a}}
+```
+
+Kinds and their pinouts: `mosfet` (G/D/S), `bjt` (B/C/E), `regulator`
+(IN/GND/OUT), `pot` (A/W/B). Naming a pin the pinout doesn't know, or
+leaving one unplaced, is an **error** — on a part whose legs are not
+interchangeable, a mistyped leg is a wiring bug the netlist would
+otherwise absorb without complaint.
+
+Internally both forms are **terminal groups**: an ordered list of legs,
+each carrying a `net_index`, where terminals sharing an index are one
+conductor. A resistor is `0, 1`; a MOSFET is `0, 1, 2`. Derivation walks
+one path over both (`Island.terminal_groups()`), so a three-legged part
+joins nets by exactly the code that joins a resistor's two. `edges` stays
+deliberately two-ended, because every geometry rule it feeds is about two
+legs and a body between them — a three-legged part has no such single
+axis. Multi-terminal results live in `design.device_nids`.
+
 ## Configuration semantics
 
 Three deliberately different answers live in this engine, and a

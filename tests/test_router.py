@@ -410,3 +410,24 @@ jumpers:
 """, EMPTY_LIB)
     _w, _s, lat2 = router.route_design({bare.name: bare})[bare.name]
     assert not any(c.startswith("gutter") for c in lat2.cols)
+
+
+def test_device_legs_occupy_their_holes():
+    """A device leg has to claim its hole in the router the way a
+    passive's does, or the autorouter will happily draw a wire straight
+    through a MOSFET's gate."""
+    from bbnet import model, router
+    from bbnet.model import island_from
+    isl = island_from({
+        "island": "bb1", "board": "full-830",
+        "rails": {"top+": "3V3", "top-": "GND", "bot+": "5V",
+                  "bot-": "GND"},
+        "devices": [{"ref": "Q1", "kind": "mosfet", "value": "2N7000",
+                     "pins": {"G": "20a", "D": "21a", "S": "22a"}}]}, {})
+    islands = {isl.name: isl}
+    design = model.derive(islands, registry())
+    routed = router.route_design(islands, design, {"ties": [], "pins": {}})
+    _wires, _stats, lat = routed["bb1"]
+    r = router._IslandRouter(isl, [], router._NetCtx())
+    for row in (20, 21, 22):
+        assert (lat.x_of("a"), row) in r.solder_cells
