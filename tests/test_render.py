@@ -339,7 +339,7 @@ def test_a_long_device_value_is_truncated_to_a_badge():
     assert lab.startswith("Q2 2N7000")
     assert lab.endswith("…")
     assert len(lab) * render.LEAD_CH_PX <= render.STACK_LABEL_PX + 6
-    assert "Program buffer" not in lab
+    assert "flying lead" not in lab, "the sentence's tail must be dropped"
 
 
 def test_a_short_device_value_is_left_alone():
@@ -354,15 +354,65 @@ def test_truncation_breaks_on_a_word_boundary():
     assert lab == "Q2 2N7000…", lab
 
 
-def test_stack_labels_are_badges_that_dodge_the_passive_badges():
-    """Passives and the level stack label the same board, so they share
-    one collision list — a per-layer list is how R9's badge and Q2's end
-    up on top of each other."""
+def _badge_plates(svg):
+    """Every value-badge plate in an island, whichever layer wrote it.
+
+    Matches on _badge_svg's own geometry rather than on the wrapper,
+    because passive badges carry data-w/data-pk and level-stack badges
+    do not — a regex keyed on the wrapper silently sees only half of
+    them, which is how the cross-layer case went untested."""
+    import re
+    return [tuple(float(v) for v in m.groups()) for m in re.finditer(
+        r'<rect x="([-\d.]+)" y="([-\d.]+)" width="([-\d.]+)" '
+        r'height="13" rx="3" fill="#fff"', svg)]
+
+
+def test_stack_labels_are_badges():
+    """A level-stack label is a plate, not bare text on the pipe field —
+    the old bare <text> was unreadable the moment a pipe ran under it."""
     svg = _left_svg()
     assert 'class="lyr-level lyr-label"' in svg
-    # a badge is a plate + text, not bare text on the pipe field
     i = svg.find('class="lyr-level lyr-label"')
     assert '<rect' in svg[i:i + 200]
+
+
+def test_the_two_label_layers_share_one_collision_list(monkeypatch):
+    """Passives and the level stack label the same board, so they must
+    nudge against ONE list — a list per layer is how a resistor's badge
+    and a MOSFET's end up on top of each other.
+
+    Asserted at the seam where it breaks (island_body passing the list)
+    rather than through the picture: in the fixture the two layers'
+    badges do not happen to land near each other, so splitting the list
+    changes no pixels and no rendered assertion would notice."""
+    seen = []
+    real_p, real_l = render._passives, render._level_layer
+
+    def spy_p(add, px, island, tints, badges, writable):
+        seen.append(badges)
+        return real_p(add, px, island, tints, badges, writable)
+
+    def spy_l(add, px, island, badges, writable):
+        seen.append(badges)
+        return real_l(add, px, island, badges, writable)
+
+    monkeypatch.setattr(render, "_passives", spy_p)
+    monkeypatch.setattr(render, "_level_layer", spy_l)
+    _left_svg()
+    assert len(seen) == 2, "both label layers must run on this fixture"
+    assert seen[0] is seen[1], "each layer got its own collision list"
+
+
+def test_no_two_badges_overlap():
+    """The user-visible half of the same rule: whatever wrote them, two
+    value badges must not sit on top of each other."""
+    plates = _badge_plates(_left_svg())
+    assert len(plates) >= 4, f"too few badges to be a real check: {plates}"
+    for i, (x1, y1, w1) in enumerate(plates):
+        for (x2, y2, w2) in plates[i + 1:]:
+            if not (x1 + w1 <= x2 or x2 + w2 <= x1):     # x overlap
+                assert abs(y1 - y2) >= 13, (
+                    f"badge plates overlap: {(x1, y1, w1)} {(x2, y2, w2)}")
 
 
 def test_narrow_part_pin_labels_go_outboard_and_float():
@@ -404,3 +454,73 @@ def test_badges_stay_out_of_the_row_number_strips():
     # a badge wider than the whole band centres rather than picking a
     # side to overflow
     assert render._badge_x((lo, hi), 40.0, 900.0) == 300.0
+
+
+# ------------------------------------------------- header/footer bands
+
+def _texts(svg):
+    """(x, y, class, text) for every <text> in an island body."""
+    import re
+    out = []
+    for m in re.finditer(
+            r'<text x="([-\d.]+)" y="([-\d.]+)"[^>]*class="([^"]+)"[^>]*>'
+            r'([^<]*)', svg):
+        out.append((float(m.group(1)), float(m.group(2)),
+                    m.group(3), m.group(4)))
+    return out
+
+
+def test_rail_names_do_not_print_on_top_of_each_other():
+    """A rail strip is 12px wide and its pair-mate's centre is 18px
+    away, but a name like "5V_DIGITAL" is far wider than either — no
+    single line can hold a pair side by side, which is why "3V3" and
+    "GND" used to print as one word. They alternate between two
+    sub-lines instead."""
+    svg = _left_svg()
+    by_line = {}
+    for x, y, cls, txt in _texts(svg):
+        if cls == "rail" and txt:
+            by_line.setdefault(y, []).append((x, txt))
+    assert by_line, "no rail labels rendered"
+    for y, items in by_line.items():
+        items.sort()
+        for (x1, t1), (x2, t2) in zip(items, items[1:]):
+            # 9px bold ui-monospace, centred: half of each name plus a
+            # gap has to fit in the space between the two centres
+            need = (len(t1) + len(t2)) * 5.4 / 2
+            assert x2 - x1 >= need, (
+                f"{t1!r} and {t2!r} overlap on line y={y}")
+
+
+def test_each_header_line_owns_its_own_row():
+    """Four kinds of furniture used to print inside 12px above row 1.
+    Assert the stack has real gaps, not that it has particular values —
+    the numbers are tuning, the separation is the contract."""
+    lines = sorted([render.HDR_TITLE, render.HDR_BOARD, *render.HDR_RAIL,
+                    render.HDR_PADS, render.HDR_COLS])
+    for a, b in zip(lines, lines[1:]):
+        assert b - a >= 5, f"header lines {a} and {b} collide"
+    row1 = render.HEAD + render.CELL / 2
+    assert row1 - render.HDR_COLS >= 8, "column letters crowd row 1"
+
+
+def test_the_end_jumper_caption_clears_the_column_letters():
+    """The caption is a whole sentence starting at the ravine and
+    running right, so on a shared line it printed straight across
+    letters f-j."""
+    assert abs(render.HDR_PADS + 3 - render.HDR_COLS) >= 6
+    assert abs(render.FTR_PADS + 3 - render.FTR_COLS) >= 6
+
+
+
+def test_edge_labels_are_deferred_like_every_other_label():
+    """A wide seam prints these inside the shared gutter instead of
+    flipping them to the outer margin, and the panel draws its stitched
+    interlinks through that same gutter afterwards. The halo on them was
+    always a half-measure: it survives a thin stroke crossing the
+    glyphs, not an opaque casing painted on top."""
+    svg = _left_svg()
+    assert 'class="lead lyr-label"' in svg
+    assert (svg.find('class="lead lyr-label"')
+            > svg.rfind('<g class="wire" data-w=')), (
+        "edge labels are painted before the last wire group")

@@ -33,9 +33,35 @@ RAV_W = 22
 EDGE_W = 10
 GAP = 6
 NUM_W = 13       # reserved row-number strip just inside the rails —
-                 # gutter wires must never paint over the numbers
+                 # it is why the row numbers are painted last
 MARGIN = 235     # label margins either side
-HEAD = 46
+
+# --------------------------------------------- header and footer bands
+#
+# Everything outside the hole grid — the island title, the rail names,
+# the built-in end-jumper pads and their caption, the hole-column
+# letters — lives in a band above row 1 and another below the last row.
+# Both bands were badly over-subscribed: four lines of furniture inside
+# 12px, so "3V3" and "GND" printed as one word and the end-jumper
+# caption ran straight across the column letters f-j.
+#
+# Each line owns its own row now. The rail names additionally alternate
+# between two sub-lines, because a rail strip is 12px wide, its
+# neighbour's centre is 18px away, and a name like "5V_DIGITAL" is far
+# wider than either — no single line can hold a pair side by side.
+HEAD = 70                    # band above row 1
+FOOT = 62                    # band below the last row
+
+HDR_TITLE = HEAD - 56        # island name, outside the casing
+HDR_BOARD = HEAD - 50        # casing rect, top edge
+HDR_RAIL = (HEAD - 40, HEAD - 29)     # strip names, alternating
+HDR_PADS = HEAD - 17         # end-jumper pads; caption baseline is +3
+HDR_COLS = HEAD - 5          # hole-column letters
+
+FTR_COLS = -42               # all four are relative to px.height
+FTR_PADS = -30
+FTR_BOARD = -22              # casing rect, bottom edge
+FTR_RAIL = (-16, -5)         # net names, alternating, below the casing
 
 WIRE_COLOURS = {
     "RED": "#d62728", "BLK": "#222222", "YEL": "#d4a800",
@@ -75,7 +101,7 @@ class PxMap:
             if name == "gutterR":
                 x += NUM_W        # row-number strip after the gutter
         self.width = x + MARGIN
-        self.height = HEAD + lattice.rows * CELL + 30
+        self.height = HEAD + lattice.rows * CELL + FOOT
 
     def x(self, xi):
         return round(self.cx[xi], 1)
@@ -466,11 +492,12 @@ def wire_length_mm(wire):
 
 def render_island(island, wires, stats, lattice, rail_tints):
     """One island, standalone: its body wrapped in its own <svg>."""
-    body, px = island_body(island, wires, stats, lattice,
-                           rail_tints=rail_tints)
+    body, labels, px = island_body(island, wires, stats, lattice,
+                                   rail_tints=rail_tints)
     return (f'<svg viewBox="0 0 {px.width} {px.height}" '
             f'width="{px.width}" height="{px.height}" '
-            f'xmlns="http://www.w3.org/2000/svg">' + body + "</svg>")
+            f'xmlns="http://www.w3.org/2000/svg">'
+            + body + "\n" + "\n".join(labels) + "</svg>")
 
 
 # --------------------------------------------------------- island layers
@@ -488,10 +515,10 @@ def _board_frame(add, px, island, stats):
     """Casing rectangle + the island's title line."""
     bx0 = px.col_x("edgeL") - EDGE_W / 2 + 4
     bx1 = px.col_x("edgeR") + EDGE_W / 2 - 4
-    add(f'<rect x="{bx0}" y="{HEAD-26}" width="{bx1-bx0}" '
-        f'height="{px.height-HEAD+16}" rx="8" fill="#f7f5ef" '
+    add(f'<rect x="{bx0}" y="{HDR_BOARD}" width="{bx1-bx0}" '
+        f'height="{px.height+FTR_BOARD-HDR_BOARD}" rx="8" fill="#f7f5ef" '
         f'stroke="#c8c2b2"/>')
-    add(f'<text x="{bx0+6}" y="{HEAD-32}" class="ttl">{esc(island.name)}'
+    add(f'<text x="{bx0+6}" y="{HDR_TITLE}" class="ttl">{esc(island.name)}'
         f'  <tspan class="sub">({esc(island.board.name)}) — '
         f'{stats.routed}/{stats.wires} wires routed, '
         f'{stats.underside} underside</tspan></text>')
@@ -501,17 +528,18 @@ def _rail_bands(add, px, island, lattice, rail_tints):
     """Rail strips: tinted band, strip name, net name — and the net
     repeated down the band so a zoomed-in view still says which strip is
     which (the top/bottom labels are far away on a 63-row board)."""
-    for strip in island.board.rails:
+    for i, strip in enumerate(island.board.rails):
         net = island.rails.get(strip, "")
         tint = rail_tints.get(net, "#999")
         x = px.col_x(f"rail:{strip}")
+        lane = i % 2               # rails come in adjacent +/- pairs
         add(f'<rect x="{x-RAIL_W/2}" y="{HEAD-4}" width="{RAIL_W}" '
             f'height="{lattice.rows*CELL+8}" rx="4" fill="{tint}" '
             f'fill-opacity="0.13" stroke="{tint}" stroke-opacity="0.6"/>')
-        add(f'<text x="{x}" y="{HEAD-8}" class="rail" fill="{tint}" '
-            f'text-anchor="middle">{esc(strip)}</text>')
-        add(f'<text x="{x}" y="{px.height-6}" class="rail" fill="{tint}" '
-            f'text-anchor="middle">{esc(net)}</text>')
+        add(f'<text x="{x}" y="{HDR_RAIL[lane]}" class="rail" '
+            f'fill="{tint}" text-anchor="middle">{esc(strip)}</text>')
+        add(f'<text x="{x}" y="{px.height+FTR_RAIL[lane]}" class="rail" '
+            f'fill="{tint}" text-anchor="middle">{esc(net)}</text>')
         for rr in range(12, lattice.rows - 4, 16):
             yy = px.y(rr)
             add(f'<text x="{x}" y="{yy}" class="rail" fill="{tint}" '
@@ -540,7 +568,7 @@ def _end_jumper_pads(add, px, island):
     plus_positions = [p for p in ("top+", "bot+") if p in island.rails]
     plus_nets = {island.rails[p] for p in plus_positions}
     rx = px.col_x("ravine")
-    for (yy, kind) in ((HEAD - 14, "PWR"), (px.height - 16, "GND")):
+    for (yy, kind) in ((HDR_PADS, "PWR"), (px.height + FTR_PADS, "GND")):
         for dx in (-5, 5):
             add(f'<circle cx="{rx+dx}" cy="{yy}" r="3.2" fill="#fff" '
                 f'stroke="#8a8a8a" stroke-width="1.4"/>')
@@ -665,7 +693,7 @@ def _column_letters(add, px, lattice):
     every time."""
     for xi in _hole_cols(lattice):
         letter = lattice.name(xi)
-        for yy in (HEAD - 6, px.height - 12):
+        for yy in (HDR_COLS, px.height + FTR_COLS):
             add(f'<text x="{px.x(xi)}" y="{yy}" class="cn" '
                 f'text-anchor="middle">{esc(letter)}</text>')
 
@@ -924,10 +952,17 @@ def _lead_glyph(add, px, w, colour, title):
         f'<title>{esc(title)}</title></path>')
 
 
-def _edge_labels(add, px, w, lattice, label_y, print_side, room_on, gx,
+def _edge_labels(px, w, lattice, label_y, print_side, room_on, gx,
                  label_px):
     """The off-board text for whichever of this wire's ends land on a
-    board edge."""
+    board edge — DEFERRED like every other label.
+
+    On a wide seam these print inside the shared gutter rather than
+    flipping to the outer margin, and the panel draws its stitched
+    interlinks through that same gutter afterwards. The halo here was
+    always a half-measure against that: it survives a thin stroke
+    crossing the glyphs, not an opaque 7.4px casing painted on top."""
+    out = []
     ends = [wpt for wpt in (w.path[0], w.path[-1])
             if lattice.is_edge(wpt.x)]
     for e in ends:
@@ -952,8 +987,9 @@ def _edge_labels(add, px, w, lattice, label_y, print_side, room_on, gx,
         # the stitched wires' lanes run right over it
         halo = ' class="lead lyr-label halo"' if label_px else \
             ' class="lead lyr-label"'
-        add(f'<text x="{round(lx, 1)}" y="{ly}"{halo}'
-            f'{anchor}>{esc(shown)}{tip}</text>')
+        out.append(f'<text x="{round(lx, 1)}" y="{ly}"{halo}'
+                   f'{anchor}>{esc(shown)}{tip}</text>')
+    return out
 
 
 def _end_pucks(add, px, island, w, lattice, colour, title, jx, jy, fly, gx,
@@ -1010,11 +1046,13 @@ def _wire_layer(add, px, island, wires, lattice, label_px, rail_tints):
     a ghost bus past the edge. Each wire is one group so click-to-
     highlight can isolate it.
 
-    Returns the edge-label lanes, because a crowded side can stack
-    labels below the last row and only the caller can grow the canvas."""
+    Returns the edge-label lanes — a crowded side can stack labels
+    below the last row and only the caller can grow the canvas — and the
+    edge labels themselves, for the caller's label layer."""
     label_y, print_side, room_on = _edge_label_lanes(
         px, wires, lattice, label_px)
     co_run = _co_run_keys(wires)
+    edge_labels = []
     ghost_rows = {}     # side -> [y px] of interlink ghost-bus landings
     for w in wires:
         colour = WIRE_COLOURS.get(w.colour, WIRE_COLOURS[""])
@@ -1044,13 +1082,13 @@ def _wire_layer(add, px, island, wires, lattice, label_px, rail_tints):
         _pipe_segments(add, w, pts, colour, jx, jy, fly, title)
         if fly and w.kind == "lead" and w.path:
             _lead_glyph(add, px, w, colour, title)
-        _edge_labels(add, px, w, lattice, label_y, print_side, room_on,
-                     gx, label_px)
+        edge_labels += _edge_labels(px, w, lattice, label_y, print_side,
+                                    room_on, gx, label_px)
         _end_pucks(add, px, island, w, lattice, colour, title, jx, jy,
                    fly, gx, rail_tints)
         add('</g>')
     _ghost_buses(add, px, ghost_rows)
-    return label_y
+    return label_y, edge_labels
 
 
 def island_body(island, wires, stats, lattice, skip_links=(),
@@ -1084,25 +1122,25 @@ def island_body(island, wires, stats, lattice, skip_links=(),
     labels = _parts(add, px, island)
     labels += _passives(add, px, island, rail_tints, badges, writable)
     labels += _level_layer(add, px, island, badges, writable)
-    label_y = _wire_layer(
+    label_y, edge_labels = _wire_layer(
         add, px, island,
         [w for w in wires if not (w.link and w.link in skip_links)],
         lattice, label_px, rail_tints)
+    labels += edge_labels
 
     # The label layer, painted last. Everything here names something —
     # a value, a pin, a row — and the sheet is unusable if a pipe lands
     # on top of it, so labels float over the pipe field the way a map
     # draws its place names over its roads. The layers below defer them
     # here rather than drawing them in place.
-    S.extend(labels)
-    S.extend(_row_numbers(px, lattice))
+    labels += _row_numbers(px, lattice)
 
     # edge labels stack downward when a side is crowded and can end up
     # below the last row — grow the canvas rather than clip them (the
     # board art above keeps the height it was laid out with)
     if label_y:
         px.height = max(px.height, round(max(label_y.values()) + 14, 1))
-    return "\n".join(S), px
+    return "\n".join(S), labels, px
 
 
 # ------------------------------------------------------------- panels
@@ -1217,14 +1255,16 @@ def render_panel(panel, islands, routed, rail_tints):
                 share = 2 if sides[panel.islands[j]].get(facing) else 1
                 b[side] = max((panel.seam - 12) / share, 3 * LEAD_CH_PX)
         budgets[name] = b
-    bodies, maps, offsets = {}, {}, {}
+    bodies, labels, maps, offsets = {}, {}, {}, {}
     x = 0.0
     height = 0.0
     for name in panel.islands:
         wires, stats, lattice = routed[name]
-        body, px = island_body(islands[name], wires, stats, lattice, skip,
-                               budgets[name], rail_tints=rail_tints)
-        bodies[name], maps[name], offsets[name] = body, px, x
+        body, labs, px = island_body(islands[name], wires, stats, lattice,
+                                     skip, budgets[name],
+                                     rail_tints=rail_tints)
+        bodies[name], labels[name] = body, labs
+        maps[name], offsets[name] = px, x
         height = max(height, px.height)
         # the two facing label margins collapse into one shared gutter
         x += px.width - (2 * MARGIN - panel.seam)
@@ -1249,6 +1289,13 @@ def render_panel(panel, islands, routed, rail_tints):
         S.append(_seam_pipe(
             pts, WIRE_COLOURS.get(aw.colour, WIRE_COLOURS[""]),
             aw.underside or bw.underside, title, aw.key))
+
+    # Each board's label layer goes on LAST, after the seam wires — a
+    # stitched interlink is drawn by the panel, after every body, so a
+    # label deferred only within its own body still ends up underneath
+    # it. Row numbers on the seam-facing rows were exactly this.
+    S += [f'<g transform="translate({round(offsets[n], 1)},0)">'
+          f'{chr(10).join(labels[n])}</g>' for n in panel.islands]
     return (f'<svg viewBox="0 0 {width} {round(height, 1)}" '
             f'width="{width}" height="{round(height, 1)}" '
             f'xmlns="http://www.w3.org/2000/svg">' + "\n".join(S)
