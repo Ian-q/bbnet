@@ -118,9 +118,9 @@ def test_seam_wire_lands_on_the_far_board_real_hole():
     for _link, ((an, aw), (bn, bw)) in links.items():
         g = _wire_group(svg, aw.key)
         for name, w in ((an, aw), (bn, bw)):
-            _body, px = render.island_body(islands[name],
-                                           *routed[name][:3],
-                                           rail_tints=TINTS)
+            _body, _labs, px = render.island_body(islands[name],
+                                                  *routed[name][:3],
+                                                  rail_tints=TINTS)
             dx = _offset(panel, islands, routed, name)
             hole = w.path[0]     # path[0] is the real terminal on-board
             cx = round(px.x(hole.x) + dx, 1)
@@ -134,8 +134,8 @@ def _offset(panel, islands, routed, name):
     for n in panel.islands:
         if n == name:
             return x
-        _b, px = render.island_body(islands[n], *routed[n][:3],
-                                    rail_tints=TINTS)
+        _b, _l, px = render.island_body(islands[n], *routed[n][:3],
+                                        rail_tints=TINTS)
         x += px.width - (2 * render.MARGIN - panel.seam)
     raise AssertionError(name)
 
@@ -254,9 +254,9 @@ def test_label_that_does_not_fit_keeps_its_full_text_on_hover():
 
 def test_standalone_island_labels_are_not_flipped():
     islands, _panels, routed = _loaded()
-    body, _px = render.island_body(islands["demo-left"],
-                                   *routed["demo-left"][:3],
-                                   rail_tints=TINTS)
+    body, _labs, _px = render.island_body(islands["demo-left"],
+                                          *routed["demo-left"][:3],
+                                          rail_tints=TINTS)
     assert " →</text>" not in body and "← " not in body
 
 
@@ -271,3 +271,17 @@ def test_page_has_one_section_per_panel_plus_each_lone_island():
     # the panel's pane holds a kitting table per member board
     for name in panels[0].islands:
         assert f"kitting table — {name}" in html
+
+
+def test_panel_labels_are_painted_after_the_seam_wires():
+    """A stitched interlink is drawn by the PANEL, after every island
+    body — so a label deferred only within its own body still ends up
+    underneath it. The row numbers on seam-facing rows were exactly
+    that: reserved a strip, painted last within the board, and buried
+    anyway by the wires crossing to the next board."""
+    islands, panels, routed = _loaded()
+    svg, _links = render.render_panel(panels[0], islands, routed, TINTS)
+    last_seam = svg.rfind('data-kind="interlink"')
+    assert last_seam > 0, "no stitched seam wire in this panel"
+    assert svg.find('class="rn halo"', last_seam) > 0, (
+        "row numbers are painted before the last seam wire")

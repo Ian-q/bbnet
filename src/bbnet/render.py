@@ -492,11 +492,12 @@ def wire_length_mm(wire):
 
 def render_island(island, wires, stats, lattice, rail_tints):
     """One island, standalone: its body wrapped in its own <svg>."""
-    body, px = island_body(island, wires, stats, lattice,
-                           rail_tints=rail_tints)
+    body, labels, px = island_body(island, wires, stats, lattice,
+                                   rail_tints=rail_tints)
     return (f'<svg viewBox="0 0 {px.width} {px.height}" '
             f'width="{px.width}" height="{px.height}" '
-            f'xmlns="http://www.w3.org/2000/svg">' + body + "</svg>")
+            f'xmlns="http://www.w3.org/2000/svg">'
+            + body + "\n" + "\n".join(labels) + "</svg>")
 
 
 # --------------------------------------------------------- island layers
@@ -1121,15 +1122,14 @@ def island_body(island, wires, stats, lattice, skip_links=(),
     # on top of it, so labels float over the pipe field the way a map
     # draws its place names over its roads. The layers below defer them
     # here rather than drawing them in place.
-    S.extend(labels)
-    S.extend(_row_numbers(px, lattice))
+    labels += _row_numbers(px, lattice)
 
     # edge labels stack downward when a side is crowded and can end up
     # below the last row — grow the canvas rather than clip them (the
     # board art above keeps the height it was laid out with)
     if label_y:
         px.height = max(px.height, round(max(label_y.values()) + 14, 1))
-    return "\n".join(S), px
+    return "\n".join(S), labels, px
 
 
 # ------------------------------------------------------------- panels
@@ -1244,14 +1244,16 @@ def render_panel(panel, islands, routed, rail_tints):
                 share = 2 if sides[panel.islands[j]].get(facing) else 1
                 b[side] = max((panel.seam - 12) / share, 3 * LEAD_CH_PX)
         budgets[name] = b
-    bodies, maps, offsets = {}, {}, {}
+    bodies, labels, maps, offsets = {}, {}, {}, {}
     x = 0.0
     height = 0.0
     for name in panel.islands:
         wires, stats, lattice = routed[name]
-        body, px = island_body(islands[name], wires, stats, lattice, skip,
-                               budgets[name], rail_tints=rail_tints)
-        bodies[name], maps[name], offsets[name] = body, px, x
+        body, labs, px = island_body(islands[name], wires, stats, lattice,
+                                     skip, budgets[name],
+                                     rail_tints=rail_tints)
+        bodies[name], labels[name] = body, labs
+        maps[name], offsets[name] = px, x
         height = max(height, px.height)
         # the two facing label margins collapse into one shared gutter
         x += px.width - (2 * MARGIN - panel.seam)
@@ -1276,6 +1278,13 @@ def render_panel(panel, islands, routed, rail_tints):
         S.append(_seam_pipe(
             pts, WIRE_COLOURS.get(aw.colour, WIRE_COLOURS[""]),
             aw.underside or bw.underside, title, aw.key))
+
+    # Each board's label layer goes on LAST, after the seam wires — a
+    # stitched interlink is drawn by the panel, after every body, so a
+    # label deferred only within its own body still ends up underneath
+    # it. Row numbers on the seam-facing rows were exactly this.
+    S += [f'<g transform="translate({round(offsets[n], 1)},0)">'
+          f'{chr(10).join(labels[n])}</g>' for n in panel.islands]
     return (f'<svg viewBox="0 0 {width} {round(height, 1)}" '
             f'width="{width}" height="{round(height, 1)}" '
             f'xmlns="http://www.w3.org/2000/svg">' + "\n".join(S)
