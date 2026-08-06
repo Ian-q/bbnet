@@ -194,3 +194,58 @@ def test_layer_and_offboard_symbology():
     # "12V input", demo-right's "bench GND"); the fixture has only two
     # leads, so there is no meaningful margin to give up here
     assert html.count("lead-fly") >= 2
+
+
+# ------------------------------------------------------- 2.5D level layer
+
+def _left_svg():
+    _p, _c, rules, islands, sig, panels = bbnet.load_data(FIXTURES)
+    design = model.derive(islands, sig)
+    routed = router.route_design(islands, design, rules, panels)
+    isl = islands["demo-left"]
+    wires, stats, lat = routed["demo-left"]
+    return render.render_island(isl, wires, stats, lat, {})
+
+
+def test_level_layer_draws_the_corpus_stack():
+    """The fixture carries a worked 2.5D example — a 3V3 fan-out bar at
+    level 1 over a MOSFET still lying on the surface. All three new
+    object kinds have to reach the build sheet, or the sheet quietly
+    stops describing the board."""
+    svg = _left_svg()
+    assert 'class="lyr-level"' in svg
+    assert 'data-level="1"' in svg
+    assert "riser 30a" in svg or "riser demo-left:30a" in svg
+    assert "LK1 1x5 @ level 1" in svg
+    assert "Q1 mosfet 2N7000" in svg
+
+
+def test_bar_pins_are_drawn_by_their_role():
+    """Bonded, clipped and floating pins are three different physical
+    facts, so they must not render as the same dot — the sheet is what
+    someone builds from."""
+    svg = _left_svg()
+    # LK1 bonds 30a/34a and clips 31a-33a: two filled pucks, three dashed
+    assert svg.count('fill="#b3452b"') >= 2
+    assert 'stroke-dasharray="2 2"' in svg
+
+
+def test_lifted_objects_are_drawn_off_their_holes():
+    """A bar drawn flat on its holes answers the opposite of the one
+    question this view exists for. Level 1 must be visibly offset."""
+    assert render._lift((100.0, 100.0), 0) == (100.0, 100.0)
+    up = render._lift((100.0, 100.0), 1)
+    assert up != (100.0, 100.0)
+    assert render._lift((100.0, 100.0), 2) != up
+
+
+def test_level_layer_is_absent_when_nothing_is_lifted():
+    """demo-right has no risers, bars or devices — it must not gain an
+    empty group, or every flat board's sheet grows noise."""
+    _p, _c, rules, islands, sig, panels = bbnet.load_data(FIXTURES)
+    design = model.derive(islands, sig)
+    routed = router.route_design(islands, design, rules, panels)
+    isl = islands["demo-right"]
+    wires, stats, lat = routed["demo-right"]
+    svg = render.render_island(isl, wires, stats, lat, {})
+    assert 'class="lyr-level"' not in svg

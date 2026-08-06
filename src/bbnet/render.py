@@ -216,6 +216,122 @@ PASSIVE_COLS = {"resistor": "#a67c2e", "ceramic": "#c46210",
                 "electrolytic": "#2e6da4"}
 
 
+DEVICE_COL = "#5b3fa8"
+RISER_COL = "#0d7a6f"
+LINK_COL = "#b3452b"
+
+# Per-level drawing offset. Small and diagonal on purpose: enough that a
+# bar at level 1 visibly floats clear of the board it spans, not so much
+# that it stops pointing at the holes it actually plugs into. The board
+# grid stays the ground truth — this is a depth CUE, not a projection.
+LEVEL_DX, LEVEL_DY = 5.0, -5.0
+
+
+def _lift(pt, level):
+    return (round(pt[0] + LEVEL_DX * level, 1),
+            round(pt[1] + LEVEL_DY * level, 1))
+
+
+def _level_layer(add, px, island):
+    """Risers, link bars and multi-terminal devices, painted low level
+    first so higher ones land on top — the same order you build them in.
+
+    Everything above the surface is drawn lifted and leader-lined back
+    to its hole, because the one question this view has to answer is
+    "what is stacked on what", and a bar drawn flat on its holes answers
+    the opposite."""
+    risers = getattr(island, "risers", ())
+    links = getattr(island, "links", ())
+    devices = getattr(island, "devices", ())
+    if not (risers or links or devices):
+        return
+
+    levels = sorted({r.level for r in risers}
+                    | {lk.level for lk in links}
+                    | {d.level for d in devices})
+    add('<g class="lyr-level">')
+    for lv in levels:
+        add(f'<g class="lvl" data-level="{lv}">')
+        for r in (x for x in risers if x.level == lv):
+            base = _endpoint_px(px, r.at)
+            if base is None:
+                continue
+            top = _lift(base, lv)
+            # the post, then the socket at its top — a riser is the one
+            # thing here that is genuinely vertical
+            add(f'<line x1="{base[0]}" y1="{base[1]}" x2="{top[0]}" '
+                f'y2="{top[1]}" stroke="{RISER_COL}" stroke-width="1.6" '
+                f'stroke-opacity="0.75"/>')
+            add(f'<circle cx="{top[0]}" cy="{top[1]}" r="3.1" '
+                f'fill="#fff" stroke="{RISER_COL}" stroke-width="1.6">'
+                f'<title>riser {r.at} → level {lv}'
+                f'{" — " + r.note if r.note else ""}</title></circle>')
+        for lk in (x for x in links if x.level == lv):
+            pts = [p for p in (_endpoint_px(px, a) for a in lk.positions)
+                   if p is not None]
+            if len(pts) < 2:
+                continue
+            a, b = _lift(pts[0], lv), _lift(pts[-1], lv)
+            add(f'<line x1="{a[0]}" y1="{a[1]}" x2="{b[0]}" y2="{b[1]}" '
+                f'stroke="{LINK_COL}" stroke-width="7" '
+                f'stroke-linecap="round" stroke-opacity="0.32"/>')
+            add(f'<line x1="{a[0]}" y1="{a[1]}" x2="{b[0]}" y2="{b[1]}" '
+                f'stroke="{LINK_COL}" stroke-width="2.6" '
+                f'stroke-linecap="round">'
+                f'<title>{esc(lk.ref)} 1x{lk.length} @ level {lv} '
+                f'({esc(lk.fab)})</title></line>')
+            bonded = {(x.row, x.half, x.hole) for x in lk.connects}
+            snipped = {(x.row, x.half, x.hole) for x in lk.clipped}
+            for addr, pt in zip(lk.positions, pts):
+                key = (addr.row, addr.half, addr.hole)
+                top = _lift(pt, lv)
+                if key in bonded:
+                    # a bonded pin really does reach the board
+                    add(f'<line x1="{pt[0]}" y1="{pt[1]}" x2="{top[0]}" '
+                        f'y2="{top[1]}" stroke="{LINK_COL}" '
+                        f'stroke-width="1.4" stroke-opacity="0.7"/>')
+                    add(f'<circle cx="{top[0]}" cy="{top[1]}" r="2.6" '
+                        f'fill="{LINK_COL}"/>')
+                elif key in snipped:
+                    add(f'<circle cx="{top[0]}" cy="{top[1]}" r="2.4" '
+                        f'fill="none" stroke="{LINK_COL}" '
+                        f'stroke-width="1.2" stroke-dasharray="2 2"/>')
+                else:
+                    # a float: pin present, touching nothing. Drawn hollow
+                    # and unconnected so the build sheet says what B15
+                    # says — this pin is hanging in the air.
+                    add(f'<circle cx="{top[0]}" cy="{top[1]}" r="2.4" '
+                        f'fill="#fff" stroke="{LINK_COL}" '
+                        f'stroke-width="1.2"/>')
+            add(f'<text x="{(a[0]+b[0])/2}" y="{(a[1]+b[1])/2 - 7}" '
+                f'class="pv" text-anchor="middle" fill="{LINK_COL}">'
+                f'{esc(lk.ref)}</text>')
+        for dv in (x for x in devices if x.level == lv):
+            pts = [p for p in (_endpoint_px(px, t.addr)
+                               for t in dv.terminals) if p is not None]
+            if len(pts) < 2:
+                continue
+            lifted = [_lift(p, lv) for p in pts]
+            path = " ".join(f"{p[0]},{p[1]}" for p in lifted)
+            add(f'<polyline points="{path}" fill="none" '
+                f'stroke="{DEVICE_COL}" stroke-width="2.4" '
+                f'stroke-linejoin="round" stroke-linecap="round">'
+                f'<title>{esc(dv.ref)} {esc(dv.kind)} '
+                f'{esc(dv.value)}</title></polyline>')
+            for t, p in zip(dv.terminals, lifted):
+                add(f'<circle cx="{p[0]}" cy="{p[1]}" r="2.4" '
+                    f'fill="#fff" stroke="{DEVICE_COL}" '
+                    f'stroke-width="1.4"><title>{esc(dv.ref)}.'
+                    f'{esc(t.name)}</title></circle>')
+            mid = lifted[len(lifted) // 2]
+            lab = f"{dv.ref} {dv.value}".strip()
+            add(f'<text x="{mid[0]}" y="{mid[1] - 8}" class="pv" '
+                f'text-anchor="middle" fill="{DEVICE_COL}">'
+                f'{esc(lab)}</text>')
+        add('</g>')
+    add('</g>')
+
+
 def _badge_y(badges, mx, my, hw, hh):
     """Nudge a value badge vertically until it overlaps no earlier
     badge (crossing passive pairs stack labels otherwise)."""
@@ -524,6 +640,8 @@ def island_body(island, wires, stats, lattice, skip_links=(),
             f'<text x="{mx}" y="{my+3.5}" class="pv" text-anchor="middle" '
             f'fill="{col}">{esc(lab)}</text></g>')
         add('</g>')
+
+    _level_layer(add, px, island)
 
     # routed wires — Flow-Free pipes: fat rounded strokes snapped to
     # the grid, a board-coloured casing under each top run so plain

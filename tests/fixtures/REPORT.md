@@ -25,6 +25,10 @@
 | `N$demo-left:15L` | `15L` (U1.6) | — |
 | `N$demo-left:15R` | `15R` (U1.7, wire→demo-right:15a) | — |
 | `N$demo-left:20L` | `20L` (wire→demo-left:24a); `24L` (wire→demo-left:20a) | — |
+| `N$demo-left:30L` | `30L` (LK1.p1); `34L` (LK1.p2) | — |
+| `N$demo-left:36L` | `36L` (Q1.G) | — |
+| `N$demo-left:37L` | `37L` (Q1.D) | — |
+| `N$demo-left:38L` | `38L` (Q1.S) | — |
 | `N$demo-left:42L` | `42L` (J1.TX) | — |
 | `N$demo-left:43L` | `43L` (J1.RX) | — |
 
