@@ -244,19 +244,24 @@ def _lift(pt, level):
             round(pt[1] + LEVEL_DY * level, 1))
 
 
-def _level_layer(add, px, island):
+def _level_layer(add, px, island, badges, writable):
     """Risers, link bars and multi-terminal devices, painted low level
     first so higher ones land on top — the same order you build them in.
 
     Everything above the surface is drawn lifted and leader-lined back
     to its hole, because the one question this view has to answer is
     "what is stacked on what", and a bar drawn flat on its holes answers
-    the opposite."""
+    the opposite.
+
+    Returns its deferred badges, and nudges them against `badges` —
+    which the passive layer has already written into. Both layers label
+    the same board."""
     risers = getattr(island, "risers", ())
     links = getattr(island, "links", ())
     devices = getattr(island, "devices", ())
     if not (risers or links or devices):
-        return
+        return []
+    deferred = []
 
     levels = sorted({r.level for r in risers}
                     | {lk.level for lk in links}
@@ -315,9 +320,13 @@ def _level_layer(add, px, island):
                     add(f'<circle cx="{top[0]}" cy="{top[1]}" r="2.4" '
                         f'fill="#fff" stroke="{LINK_COL}" '
                         f'stroke-width="1.2"/>')
-            add(f'<text x="{(a[0]+b[0])/2}" y="{(a[1]+b[1])/2 - 7}" '
-                f'class="pv" text-anchor="middle" fill="{LINK_COL}">'
-                f'{esc(lk.ref)}</text>')
+            lab = _stack_label(lk.ref, f"1x{lk.length}")
+            hw = len(lab) * 2.6 + 5
+            mx = _badge_x(writable, (a[0] + b[0]) / 2, hw)
+            my = _badge_y(badges, mx, (a[1] + b[1]) / 2 - 7, hw, 8)
+            deferred.append(
+                f'<g class="lyr-level lyr-label">'
+                f'{_badge_svg(mx, my, lab, LINK_COL)}</g>')
         for dv in (x for x in devices if x.level == lv):
             pts = [p for p in (_endpoint_px(px, t.addr)
                                for t in dv.terminals) if p is not None]
@@ -336,17 +345,26 @@ def _level_layer(add, px, island):
                     f'stroke-width="1.4"><title>{esc(dv.ref)}.'
                     f'{esc(t.name)}</title></circle>')
             mid = lifted[len(lifted) // 2]
-            lab = f"{dv.ref} {dv.value}".strip()
-            add(f'<text x="{mid[0]}" y="{mid[1] - 8}" class="pv" '
-                f'text-anchor="middle" fill="{DEVICE_COL}">'
-                f'{esc(lab)}</text>')
+            lab = _stack_label(dv.ref, dv.value)
+            hw = len(lab) * 2.6 + 5
+            mx = _badge_x(writable, mid[0], hw)
+            my = _badge_y(badges, mx, mid[1] - 8, hw, 8)
+            deferred.append(
+                f'<g class="lyr-level lyr-label">'
+                f'{_badge_svg(mx, my, lab, DEVICE_COL)}</g>')
         add('</g>')
     add('</g>')
+    return deferred
 
 
 def _badge_y(badges, mx, my, hw, hh):
     """Nudge a value badge vertically until it overlaps no earlier
-    badge (crossing passive pairs stack labels otherwise)."""
+    badge (crossing passive pairs stack labels otherwise).
+
+    `badges` is island-scoped, not layer-scoped: passives and the level
+    stack both write labels onto the same board and so must compete for
+    the same space. Keeping a list per layer is how R9's badge and Q2's
+    end up on top of each other."""
     for off in (0, -13, 13, -26, 26, -39, 39):
         cand = my + off
         if not any(abs(mx - bx) < hw + bw and abs(cand - by) < hh + bh
@@ -355,6 +373,64 @@ def _badge_y(badges, mx, my, hw, hh):
             return cand
     badges.append((mx, my, hw, hh))
     return my
+
+
+def _badge_x(writable, mx, hw):
+    """Slide a badge plate back inside the writable band.
+
+    NUM_W reserves a strip down each side for the row numbers, and the
+    numbers paint last — so a badge that drifts into one does not cover
+    it, it gets covered BY it, and you lose the value and the row at
+    once. The strips are the sheet's coordinate system; nothing else
+    gets to sit in them."""
+    lo, hi = writable
+    if lo + hw > hi - hw:      # board narrower than the badge: centre it
+        return (lo + hi) / 2
+    return min(max(mx, lo + hw), hi - hw)
+
+
+def _badge_svg(mx, my, lab, col, dash=""):
+    """A value badge: white plate + centred text, sized off the label's
+    character count (the sheet is ui-monospace throughout)."""
+    return (f'<rect x="{mx-len(lab)*2.6-3}" y="{my-6.5}" '
+            f'width="{len(lab)*5.2+6}" height="13" rx="3" '
+            f'fill="#fff" stroke="{col}"{dash}/>'
+            f'<text x="{mx}" y="{my+3.5}" class="pv" text-anchor="middle" '
+            f'fill="{col}">{esc(lab)}</text>')
+
+
+# A board label has to fit ON the board. Passive values are short by
+# nature ("4.7k", "100n"), but a device or link `value:` is free text
+# and is routinely a whole sentence — "2N7000 (level-shift buffer for
+# the reset line, replaces the flying lead)" is a realistic one.
+# Printed at full length and centred on the part, that single string
+# crosses the entire board, the row numbers, and every label in the
+# margin beyond it.
+STACK_LABEL_PX = 104
+
+
+def _stack_label(ref, value):
+    """What a level-stack badge says. The ref always survives — it is
+    the thing you look up in the report and the kitting table; the value
+    is truncated to fit beside it. Nothing is lost: the untruncated text
+    is on the part's own <title>, which is where a long description was
+    always going to be read from anyway."""
+    value = (value or "").strip()
+    room = int(STACK_LABEL_PX / LEAD_CH_PX) - len(ref) - 1
+    if not value or room < 4:
+        return ref
+    if len(value) <= room:
+        return f"{ref} {value}"
+    # Break at the last word boundary rather than mid-token. A hard cut
+    # gives "2N7000 (level-…", which spends half the badge on a
+    # fragment of a sentence; breaking gives "2N7000…", which spends it
+    # on the part number — the one thing in a device value that is worth
+    # reading at arm's length from the board.
+    cut = value[:room - 1]
+    space = cut.rfind(" ")
+    if space > 0:
+        cut = cut[:space]
+    return f"{ref} {cut.rstrip(' -(,;:')}…"
 
 
 def _ep_name(ep):
@@ -541,29 +617,45 @@ def _number_strip_x(px, lattice):
 
 
 def _hole_grid(add, px, lattice):
-    """The hole dots, the row numbers in their reserved strips, and a
-    full-width guide every fifth row.
+    """The hole dots and a full-width guide every fifth row.
 
-    Counting holes by eye is the single most error-prone thing about
-    working from a printed sheet, and an unbroken column of identical
-    grey digits gives the eye nothing to land on — the decade lines are
-    what let you find row 43 without counting."""
+    The decade lines are what let you find row 43 without counting from
+    1 — counting holes by eye is the single most error-prone thing about
+    working from a printed sheet. The numbers themselves are a separate,
+    later layer (see _row_numbers)."""
     hole_cols = _hole_cols(lattice)
     nx_l, nx_r = _number_strip_x(px, lattice)
     for r in range(1, lattice.rows + 1):
         y = px.y(r)
-        major = (r % 5 == 0)
-        if major:
+        if r % 5 == 0:
             add(f'<line x1="{round(nx_l + 6, 1)}" y1="{y}" '
                 f'x2="{round(nx_r - 6, 1)}" y2="{y}" stroke="#000" '
                 f'stroke-opacity="0.055" stroke-width="1"/>')
-        cls = "rn maj" if major else "rn"
-        add(f'<text x="{round(nx_l, 1)}" y="{y+3}" class="{cls}" '
-            f'text-anchor="middle">{r}</text>')
-        add(f'<text x="{round(nx_r, 1)}" y="{y+3}" class="{cls}" '
-            f'text-anchor="middle">{r}</text>')
         for xi in hole_cols:
             add(f'<circle cx="{px.x(xi)}" cy="{y}" r="1.6" fill="#c9c3b3"/>')
+
+
+def _row_numbers(px, lattice):
+    """The row numbers, as deferred text painted ABOVE the wires.
+
+    NUM_W reserves a strip for them inside the rails, but reserving
+    board space cannot protect them: every wire bound for an edge has to
+    cross that strip to get there, and the wire layer paints after. The
+    numbers are the sheet's coordinate system — you read a hole address
+    off them — so they go on top, haloed, the way a map draws its labels
+    over its roads.
+
+    Every fifth number is darker and bolder: an unbroken column of
+    identical grey digits gives the eye nothing to land on."""
+    nx_l, nx_r = _number_strip_x(px, lattice)
+    out = []
+    for r in range(1, lattice.rows + 1):
+        y = px.y(r)
+        cls = "rn maj halo" if r % 5 == 0 else "rn halo"
+        for nx in (nx_l, nx_r):
+            out.append(f'<text x="{round(nx, 1)}" y="{y+3}" class="{cls}" '
+                       f'text-anchor="middle">{r}</text>')
+    return out
 
 
 def _column_letters(add, px, lattice):
@@ -580,7 +672,13 @@ def _column_letters(add, px, lattice):
 
 def _parts(add, px, island):
     """Footprint parts: the body rect, its soft overhang keep-out, a
-    per-pin label, and the ref rotated down the middle."""
+    per-pin label, and the ref rotated down the middle.
+
+    Returns the OUTBOARD pin labels as deferred text. A wide part's pin
+    labels sit inside its own body, which the router keeps clear, so
+    they are safe painted here; a narrow part's have to go outside it,
+    onto board that wires do route across — so those go on top."""
+    deferred = []
     for part in island.parts:
         pins = part.pins
         rows = [a.row for a in pins.values()]
@@ -607,6 +705,17 @@ def _parts(add, px, island):
         add(f'<rect x="{x0}" y="{y0}" width="{x1-x0}" height="{y1-y0}" '
             f'rx="5" class="part"><title>{esc(part.ref)}: '
             f'{esc(part.value)}</title></rect>')
+        # A single-column part (a SIL header, a 3-terminal regulator) is
+        # 14px wide and a pin name is 20-32px, so there is no "inside"
+        # to label into: text placed there lands on the ref rotated down
+        # the middle, and X1/X2/X3 came out unreadable. Narrow parts
+        # label OUTBOARD instead — away from the ravine, which is the
+        # side with board left on it — and take a halo, since out there
+        # they cross the hole grid and whatever routes past.
+        narrow = x1 - x0 < 40
+        # the ravine is to the R half's left and the L half's right, so
+        # "away from the ravine" is right for R and left for L
+        out_right = narrow and {a.half for a in pins.values()} == {"R"}
         for pn, a in pins.items():
             if cols:
                 cx = px.col_x(cols[pn])
@@ -614,20 +723,29 @@ def _parts(add, px, island):
                 cx = px.col_x(a.hole)
             else:
                 continue
-            anchor = "start" if cx - x0 < x1 - cx else "end"
-            tx = x0 + 4 if anchor == "start" else x1 - 4
-            if x1 - x0 < 40:   # narrow part: label beside the pin dot
+            if narrow:
                 add(f'<circle cx="{cx}" cy="{px.y(a.row)}" r="2.4" '
                     f'fill="#333"/>')
-            add(f'<text x="{tx}" y="{px.y(a.row)+3}" class="pin" '
-                f'text-anchor="{anchor}">{esc(pn)}</text>')
+                anchor = "start" if out_right else "end"
+                tx = x1 + 3 if out_right else x0 - 3
+                # keeps lyr-part so the components toggle still hides it
+                deferred.append(
+                    f'<g class="lyr-part"><text x="{tx}" '
+                    f'y="{px.y(a.row)+3}" class="pin halo" '
+                    f'text-anchor="{anchor}">{esc(pn)}</text></g>')
+            else:
+                anchor = "start" if cx - x0 < x1 - cx else "end"
+                tx = x0 + 4 if anchor == "start" else x1 - 4
+                add(f'<text x="{tx}" y="{px.y(a.row)+3}" class="pin" '
+                    f'text-anchor="{anchor}">{esc(pn)}</text>')
         midx, midy = (x0 + x1) / 2, (y0 + y1) / 2
         add(f'<text x="{midx}" y="{midy}" class="pref" text-anchor="middle" '
             f'transform="rotate(90 {midx} {midy})">{esc(part.ref)}</text>')
         add('</g>')
+    return deferred
 
 
-def _passives(add, px, island, rail_tints):
+def _passives(add, px, island, rail_tints, badges, writable):
     """Two-terminal passives. Rail-to-rail entry decouplers stagger down
     from row 1.
 
@@ -636,7 +754,6 @@ def _passives(add, px, island, rail_tints):
     labels. Each badge carries the passive's own data-w/data-pk, so
     layer toggles and click-isolate still treat badge and body as one."""
     rail_rail_n = 0
-    badges = []
     deferred_badges = []
     for q in island.passives:
         rows = [e.row for e in (q.a, q.b) if getattr(e, "row", 0)]
@@ -693,16 +810,14 @@ def _passives(add, px, island, rail_tints):
         lab = f"{q.ref} {val}".strip()
         if abs(pb[0] - pa[0]) < len(lab) * 5.2 + 20:
             my -= 11
-        my = _badge_y(badges, mx, my, len(lab) * 2.6 + 5, 8)
+        hw = len(lab) * 2.6 + 5
+        mx = _badge_x(writable, mx, hw)
+        my = _badge_y(badges, mx, my, hw, 8)
         bdash = ' stroke-dasharray="3 2"' if side_bot else ""
         deferred_badges.append(
             f'<g class="wire lyr-passive lyr-label" data-w="{esc(pkey)}" '
             f'data-pk="{esc(q.kind)}">'
-            f'<rect x="{mx-len(lab)*2.6-3}" y="{my-6.5}" '
-            f'width="{len(lab)*5.2+6}" height="13" rx="3" '
-            f'fill="#fff" stroke="{col}"{bdash}/>'
-            f'<text x="{mx}" y="{my+3.5}" class="pv" text-anchor="middle" '
-            f'fill="{col}">{esc(lab)}</text></g>')
+            f'{_badge_svg(mx, my, lab, col, bdash)}</g>')
         add('</g>')
     return deferred_badges
 
@@ -961,14 +1076,26 @@ def island_body(island, wires, stats, lattice, skip_links=(),
     _ravine_keepouts(add, px, island)
     _hole_grid(add, px, lattice)
     _column_letters(add, px, lattice)
-    _parts(add, px, island)
-    deferred_badges = _passives(add, px, island, rail_tints)
-    _level_layer(add, px, island)
+    # one badge-collision list for the whole island: passives and the
+    # level stack label the same board and must not stack on each other
+    badges = []
+    nx_l, nx_r = _number_strip_x(px, lattice)
+    writable = (nx_l + NUM_W / 2 + 2, nx_r - NUM_W / 2 - 2)
+    labels = _parts(add, px, island)
+    labels += _passives(add, px, island, rail_tints, badges, writable)
+    labels += _level_layer(add, px, island, badges, writable)
     label_y = _wire_layer(
         add, px, island,
         [w for w in wires if not (w.link and w.link in skip_links)],
         lattice, label_px, rail_tints)
-    S.extend(deferred_badges)   # value badges float above the pipes
+
+    # The label layer, painted last. Everything here names something —
+    # a value, a pin, a row — and the sheet is unusable if a pipe lands
+    # on top of it, so labels float over the pipe field the way a map
+    # draws its place names over its roads. The layers below defer them
+    # here rather than drawing them in place.
+    S.extend(labels)
+    S.extend(_row_numbers(px, lattice))
 
     # edge labels stack downward when a side is crowded and can end up
     # below the last row — grow the canvas rather than clip them (the

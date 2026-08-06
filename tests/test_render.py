@@ -274,8 +274,8 @@ def test_every_fifth_row_is_emphasised():
     to land on. The decade rows are what let you find row 43 without
     counting from 1."""
     svg = _left_svg()
-    assert 'class="rn maj"' in svg
-    assert 'class="rn"' in svg, "non-decade rows keep the plain style"
+    assert 'class="rn maj halo"' in svg
+    assert 'class="rn halo"' in svg, "non-decade rows keep the plain style"
 
 
 def test_lane_offsets_keep_the_grid_phase():
@@ -297,13 +297,13 @@ def test_lane_offsets_keep_the_grid_phase():
 PAINT_ORDER = [
     ('class="ttl"', "board frame + title"),
     ('class="rail"', "rail bands"),
-    ('class="rn"', "hole grid + row numbers"),
     ('class="cn"', "column letters"),
     ('class="lyr-part"', "footprint parts"),
     ('<g class="wire lyr-passive" data-w=', "passive bodies"),
     ('class="lyr-level"', "the level stack, above what it stands on"),
     ('<g class="wire" data-w=', "routed wires, over the board art"),
     ('class="wire lyr-passive lyr-label"', "value badges, over the pipes"),
+    ('class="rn maj halo"', "row numbers, over everything"),
 ]
 
 
@@ -322,3 +322,85 @@ def test_island_body_paints_layers_back_to_front():
     assert seen == sorted(seen), (
         "layers out of paint order: "
         + " then ".join(w for _i, w in sorted(seen)))
+
+
+# ------------------------------------------------------------ label layer
+
+def test_a_long_device_value_is_truncated_to_a_badge():
+    """A device `value:` is free text and is routinely a whole
+    sentence. Printed at full length and centred on the part, one such
+    string crosses the entire board, the row numbers, and every label
+    in the margin beyond it — which is what a real bench sheet did the
+    day its FETs were retyped from parts into devices. The ref
+    survives; the rest goes to hover."""
+    long = ("2N7000 (level-shift buffer for the reset line, replaces "
+            "the flying lead)")
+    lab = render._stack_label("Q2", long)
+    assert lab.startswith("Q2 2N7000")
+    assert lab.endswith("…")
+    assert len(lab) * render.LEAD_CH_PX <= render.STACK_LABEL_PX + 6
+    assert "Program buffer" not in lab
+
+
+def test_a_short_device_value_is_left_alone():
+    assert render._stack_label("Q1", "2N7000") == "Q1 2N7000"
+    assert render._stack_label("LK1", "") == "LK1"
+
+
+def test_truncation_breaks_on_a_word_boundary():
+    """Half a badge spent on "(reset-line" says nothing; the same space
+    spent on the part number says what the part is."""
+    lab = render._stack_label("Q2", "2N7000 (reset-line buffer)")
+    assert lab == "Q2 2N7000…", lab
+
+
+def test_stack_labels_are_badges_that_dodge_the_passive_badges():
+    """Passives and the level stack label the same board, so they share
+    one collision list — a per-layer list is how R9's badge and Q2's end
+    up on top of each other."""
+    svg = _left_svg()
+    assert 'class="lyr-level lyr-label"' in svg
+    # a badge is a plate + text, not bare text on the pipe field
+    i = svg.find('class="lyr-level lyr-label"')
+    assert '<rect' in svg[i:i + 200]
+
+
+def test_narrow_part_pin_labels_go_outboard_and_float():
+    """A single-column part is 14px wide and a pin name is 20-32px:
+    there is no inside to label into, so the text landed on the ref
+    rotated down the middle. Outboard, over routable board, it also has
+    to be painted above the wires — a halo cannot save text that a pipe
+    is drawn on top of."""
+    svg = _left_svg()
+    assert 'class="pin halo"' in svg
+    assert svg.find('class="pin halo"') > svg.find('<g class="wire" data-w=')
+
+
+def test_outboard_pin_labels_still_follow_the_components_toggle():
+    """They leave the part's own <g>, so they have to carry lyr-part
+    themselves or switching components off strands them on the board."""
+    svg = _left_svg()
+    i = svg.find('class="pin halo"')
+    assert '<g class="lyr-part">' in svg[max(0, i - 60):i]
+
+
+def test_row_numbers_are_painted_over_the_wires():
+    """NUM_W reserves a strip for the numbers, but reserving board space
+    cannot protect them: every wire bound for an edge crosses that strip
+    to get there, and the wire layer paints after. They are the sheet's
+    coordinate system, so they go on top."""
+    svg = _left_svg()
+    assert svg.find('class="rn halo"') > svg.find('<g class="wire" data-w=')
+
+
+def test_badges_stay_out_of_the_row_number_strips():
+    """NUM_W reserves a strip down each side, and the numbers now paint
+    last — so a badge that drifts into one does not cover it, it gets
+    covered BY it, and you lose the value and the row together."""
+    lo, hi = 100.0, 500.0
+    assert render._badge_x((lo, hi), 40.0, 20.0) == lo + 20.0
+    assert render._badge_x((lo, hi), 900.0, 20.0) == hi - 20.0
+    assert render._badge_x((lo, hi), 300.0, 20.0) == 300.0
+    # a badge wider than the whole band centres rather than picking a
+    # side to overflow
+    assert render._badge_x((lo, hi), 40.0, 900.0) == 300.0
