@@ -713,6 +713,10 @@ def island_from(d, parts_lib):
         if missing:
             raise ModelError(f"{name}.{ref}: {kind} leaves pin(s) "
                              f"{missing} unplaced — expected {list(pinout)}")
+        if ref in refs:
+            raise ModelError(f"{name}: device ref {ref!r} duplicates a "
+                             "part or device ref on this island")
+        refs.add(ref)
         normally = dv.get("normally")
         idx = device_indices(kind, pinout,
                              (str(normally) if normally else None),
@@ -884,7 +888,11 @@ def derive(islands, signals):
     """
     refs = {}
     for isl in islands.values():
-        for part in isl.parts:
+        # Devices are addressable by ref too: a jumper may say `Q1.G`,
+        # and rules.yaml may put a `pulldown` on it. Their refs share one
+        # namespace with parts because rules.yaml keys on bare refs and
+        # cannot tell the two apart.
+        for part in list(isl.parts) + list(isl.devices):
             if part.ref in refs:
                 raise ModelError(f"ref {part.ref!r} used in both "
                                  f"{refs[part.ref][0].name} and {isl.name} — "
@@ -896,10 +904,12 @@ def derive(islands, signals):
             if endpoint.ref not in refs:
                 raise ModelError(f"{isl.name}: unknown ref in {endpoint}")
             part = refs[endpoint.ref][1]
-            if endpoint.pin not in part.pins:
+            addr = (part.addr_of(endpoint.pin) if isinstance(part, Device)
+                    else part.pins.get(endpoint.pin))
+            if addr is None:
                 raise ModelError(f"{endpoint.ref} has no pin "
                                  f"{endpoint.pin!r} placed")
-            return part.pins[endpoint.pin]
+            return addr
         if isinstance(endpoint, XIsland):
             target = islands.get(endpoint.island)
             if target is None:
@@ -989,6 +999,12 @@ def derive(islands, signals):
             for t in terminals:
                 key = touch(resolve(t.addr, isl), f"{part.ref}.{t.name}")
                 keys.append(key)
+                # A device leg is a named pin like any other, so it goes
+                # in pin_nid: that is what net_of_pin() reads, and what
+                # lets rules.yaml put a `pulldown` on a MOSFET gate. The
+                # bench's Q1/Q2 gate pull-downs are exactly that shape.
+                if isinstance(part, Device):
+                    pin_key[(part.ref, t.name)] = key
                 # Terminals sharing a net_index are one conductor inside
                 # the part, so they merge here. Distinct indices stay
                 # apart: this loop is what keeps a MOSFET's three legs on

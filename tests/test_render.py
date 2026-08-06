@@ -249,3 +249,40 @@ def test_level_layer_is_absent_when_nothing_is_lifted():
     wires, stats, lat = routed["demo-right"]
     svg = render.render_island(isl, wires, stats, lat, {})
     assert 'class="lyr-level"' not in svg
+
+
+# ------------------------------------------------------------ axis labels
+
+def test_hole_columns_are_labelled():
+    """The axis every wire is addressed by (`43h`) was the one the sheet
+    never labelled — you counted columns from the ravine every time."""
+    svg = _left_svg()
+    assert 'class="cn"' in svg
+    for letter in "abcdefghij":
+        assert f'class="cn" text-anchor="middle">{letter}<' in svg, letter
+
+
+def test_column_letters_appear_above_and_below_the_board():
+    """One strip is not enough on a tall board: at row 60 the header is
+    off the top of your view."""
+    svg = _left_svg()
+    assert svg.count('class="cn"') == 20      # 10 columns, twice
+
+
+def test_every_fifth_row_is_emphasised():
+    """An unbroken column of identical grey digits gives the eye nothing
+    to land on. The decade rows are what let you find row 43 without
+    counting from 1."""
+    svg = _left_svg()
+    assert 'class="rn maj"' in svg
+    assert 'class="rn"' in svg, "non-decade rows keep the plain style"
+
+
+def test_lane_offsets_keep_the_grid_phase():
+    """Hole centres land on a half-pixel, so a whole-number lane offset
+    keeps a displaced pipe on that same phase and it renders crisp. A
+    fractional offset is what made co-run pipes look softer than wires
+    that happened not to move."""
+    dx, dy = render._jitter("some-wire-key")
+    assert dx == int(dx) and dy == int(dy)
+    assert render.LANE * 2 > 6.5, "co-run separation must clear the casing"
