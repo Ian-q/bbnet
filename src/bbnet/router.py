@@ -206,6 +206,7 @@ class _IslandRouter:
         self.solder_cells = set()
         self.body_cells = set()
         self.passive_cells = set()
+        self.level_cells = {}      # level -> cells claimed at that level
 
         def occupy(ep):
             self.occupied_halfrows.update(self._endpoint_halfrows(ep))
@@ -230,8 +231,7 @@ class _IslandRouter:
         for q in isl.passives:
             occupy(q.a)
             occupy(q.b)
-            if getattr(q, "side", "top") == "top":
-                self.passive_cells |= self._span(q.a, q.b)
+            self._claim_span(getattr(q, "level", 0), self._span(q.a, q.b))
         for dv in getattr(isl, "devices", ()):
             for t in dv.terminals:
                 occupy(t.addr)
@@ -239,14 +239,34 @@ class _IslandRouter:
             # resistor does, so its keep-out is the span across its
             # outermost legs — the TO-92 tab really does sit over the
             # holes between G and S.
-            if dv.side == "top" and len(dv.terminals) > 1:
-                self.passive_cells |= self._span(dv.terminals[0].addr,
-                                                 dv.terminals[-1].addr)
+            if len(dv.terminals) > 1:
+                self._claim_span(dv.level,
+                                 self._span(dv.terminals[0].addr,
+                                            dv.terminals[-1].addr))
+        # A riser is soldered into its hole like any other leg, so it
+        # claims that hole against B1 — the socket it presents is above
+        # the board, but the pin is IN it.
+        for r in getattr(isl, "risers", ()):
+            occupy(r.at)
         for j in isl.jumpers + isl.interlinks:
             occupy(j.a)
             occupy(j.b)
         for w in isl.leads:
             occupy(w.at)
+
+    def _claim_span(self, level, cells):
+        """File a body's footprint under the level it sits at.
+
+        Level 0 is the board surface, and those cells are what the
+        autorouter has to route around. A body lifted to level 1 stops
+        competing for surface channel entirely — that is the whole point
+        of building upward — and the underside (level -1) never competed
+        for it in the first place, which is why `side: bottom` was
+        already excluded here before levels existed."""
+        if level == 0:
+            self.passive_cells |= cells
+        else:
+            self.level_cells.setdefault(level, set()).update(cells)
 
     def _pin_col(self, part, addr):
         """Lattice x of a part pin recorded as a bare half-row, or None
