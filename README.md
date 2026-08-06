@@ -194,6 +194,13 @@ devices:
   - {ref: RV1, kind: pot,   value: 10k,    pins: {A: 30a, W: 31a, B: 32a}}
 ```
 
+A device may carry `seeds:` (pin → net name) exactly as a footprint part
+does — a regulator's `OUT` naming the rail it produces is the common
+case — and its pins are first-class: `net_of_pin()` sees them, `rules.yaml`
+can put a requirement on a MOSFET gate, and a jumper may address `Q1.G`.
+Device refs share one namespace with part refs, because `rules.yaml` keys
+on bare refs and cannot tell them apart.
+
 Kinds and their pinouts: `mosfet` (G/D/S), `bjt` (B/C/E), `regulator`
 (IN/GND/OUT), `pot` (A/W/B), `switch` (A/B), `relay`
 (A1/A2/COM/NO/NC). Naming a pin the pinout doesn't know, or

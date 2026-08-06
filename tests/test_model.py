@@ -618,3 +618,23 @@ def test_device_ref_cannot_collide_with_a_part_ref():
         _derive(_dev_island(
             parts=[{"ref": "Q1", "pins": {"P": "30a"}}],
             devices=[dict(FET)]))
+
+
+def test_device_seed_names_the_net_it_makes():
+    """A regulator's OUT names the rail it produces, exactly as it does
+    on a footprint part. Without this a migrated LDO would silently
+    unname 3V3 and every net downstream of it would go synthetic."""
+    design = _derive(_dev_island(devices=[
+        {"ref": "U2", "kind": "regulator", "value": "AMS1117-3.3",
+         "pins": {"IN": "20a", "GND": "21a", "OUT": "22a"},
+         "seeds": {"OUT": "3V3"}}]))
+    assert design.net_of_pin("U2", "OUT").name == "3V3"
+    assert design.net_of_pin("U2", "IN").name != "3V3"
+
+
+def test_device_seed_for_an_unknown_pin_is_rejected():
+    with pytest.raises(ModelError, match="seed"):
+        _derive(_dev_island(devices=[
+            {"ref": "U2", "kind": "regulator",
+             "pins": {"IN": "20a", "GND": "21a", "OUT": "22a"},
+             "seeds": {"VOUT": "3V3"}}]))

@@ -411,6 +411,7 @@ class Device:
     rating: str = ""
     level: int = 0
     normally: str = ""   # switches only: the state the netlist assumes
+    seeds: dict = field(default_factory=dict)  # pin -> net name
 
     def addr_of(self, pin):
         for t in self.terminals:
@@ -721,11 +722,16 @@ def island_from(d, parts_lib):
         idx = device_indices(kind, pinout,
                              (str(normally) if normally else None),
                              f"{name}.{ref}")
+        seeds = {str(k): str(v) for k, v in (dv.get("seeds") or {}).items()}
+        unknown_seeds = sorted(set(seeds) - set(pinout))
+        if unknown_seeds:
+            raise ModelError(f"{name}.{ref}: seed(s) for pin(s) "
+                             f"{unknown_seeds} — expected {list(pinout)}")
         terminals = [Terminal(p, ep(placed[p]), idx[p]) for p in pinout]
         devices.append(Device(ref, kind, str(dv.get("value", "")),
                               terminals, name, side,
                               str(dv.get("rating", "")), level,
-                              (str(normally) if normally else "")))
+                              (str(normally) if normally else ""), seeds))
 
     risers = []
     for rs in d.get("risers") or []:
@@ -1005,6 +1011,14 @@ def derive(islands, signals):
                 # bench's Q1/Q2 gate pull-downs are exactly that shape.
                 if isinstance(part, Device):
                     pin_key[(part.ref, t.name)] = key
+                    # A regulator's OUT names the rail it makes, exactly
+                    # as it does on a footprint part. Without this a
+                    # migrated LDO would silently unname 3V3 and every
+                    # net downstream of it would go synthetic.
+                    if t.name in part.seeds:
+                        seeds_at.setdefault(key, []).append(
+                            (part.seeds[t.name],
+                             f"{part.ref}.{t.name} seed", "part"))
                 # Terminals sharing a net_index are one conductor inside
                 # the part, so they merge here. Distinct indices stay
                 # apart: this loop is what keeps a MOSFET's three legs on
