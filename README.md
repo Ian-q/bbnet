@@ -151,6 +151,13 @@ own index):
 | B9 passive-overlap | two same-face passive bodies crossing or lying along each other |
 | B10 cap-polarity | electrolytics are polarized (`from` = "+" by convention); flags one reversed across GND and power |
 | B11 voltage-rating | a rated part across a known power net: error when the rail exceeds the rating, warning on thin derating |
+| B12 in-node detour | a wire landing in one hole of a half-row and then crawling across its own node to leave — waivable via `in_node_waivers` |
+| B13 half-row landing | an endpoint left as a bare half-row (`39L`) whose only remaining holes are taken or under a part body |
+
+B12 and B13 measure **routed geometry**, not connectivity: they need the
+autorouter to have resolved a bare half-row like `40R` to the hole it
+really uses. `check` and `report` route and so run them; `todo` and `bom`
+are connectivity-only and skip both the router and these two rules.
 
 ## Configuration semantics
 

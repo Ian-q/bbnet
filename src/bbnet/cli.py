@@ -118,10 +118,20 @@ def load_data(data_dir):
     return parts_lib, colours, rules, islands, g_signals, panels
 
 
-def build(data_dir):
-    _parts, colours, rules, islands, pm, _panels = load_data(data_dir)
+def build(data_dir, route=True):
+    """Derive the netlist and run DRC. `route` also autoroutes, which the
+    geometry-dependent rules (B12 in-node detour, B13 half-row landing)
+    need — the router resolves half-row endpoints like `40R` to the hole
+    they really use, which is exactly what those rules measure. Pass
+    route=False for the connectivity-only commands, which pay nothing
+    for geometry."""
+    _parts, colours, rules, islands, pm, panels = load_data(data_dir)
     design = model.derive(islands, pm)
-    violations, todos = drc.run_all(design, rules, colours)
+    routed = None
+    if route:
+        from bbnet import router
+        routed = router.route_design(islands, design, rules, panels)
+    violations, todos = drc.run_all(design, rules, colours, routed)
     return design, violations, todos
 
 
@@ -215,7 +225,10 @@ def cmd_report(data_dir):
 
 
 def cmd_todo(data_dir):
-    _design, _violations, todos = build(data_dir)
+    # connectivity-only: todos come from the requirements engine, so skip
+    # the router (check/report still route — their violation counts must
+    # agree or REPORT.md's summary drifts against the check every run)
+    _design, _violations, todos = build(data_dir, route=False)
     if not todos:
         print("no unmet requirements — nothing to place")
         return 0
@@ -243,7 +256,7 @@ def cmd_render(data_dir, out=None):
 
 
 def cmd_bom(data_dir):
-    design, _violations, todos = build(data_dir)
+    design, _violations, todos = build(data_dir, route=False)  # no geometry
     for iname in sorted(design.islands):
         isl = design.islands[iname]
         print(f"# {iname}")

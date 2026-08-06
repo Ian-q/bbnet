@@ -30,7 +30,12 @@ def test_fixture_corpus_has_no_drc_errors(fx):
 
 def test_fixture_corpus_warnings_are_the_expected_set(fx):
     """Warnings are deliberate -- a sterile fixture would not exercise
-    the warning paths. Assert the exact set so drift is visible."""
+    the warning paths. Assert the exact set so drift is visible.
+
+    cli.build() routes, so this also pins the geometry-dependent rules
+    (B12 in-node detour, B13 half-row landing) at zero for the corpus:
+    a change that starts drawing wires into occupied or body-covered
+    holes shows up here as a new rule name, not as a silent redraw."""
     _design, violations, _todos = cli.build(fx)
     rules = sorted({v.rule for v in violations})
     assert rules == ["pinmap-xcheck", "rail-split"]
