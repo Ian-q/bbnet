@@ -397,18 +397,19 @@ def render_island(island, wires, stats, lattice, rail_tints):
             f'xmlns="http://www.w3.org/2000/svg">' + body + "</svg>")
 
 
-def island_body(island, wires, stats, lattice, skip_links=(),
-                label_px=None, *, rail_tints):
-    """SVG content for one island in its own coordinates, plus its
-    PxMap. A panel translates several of these into one <svg>;
-    `skip_links` names cross-island links the panel draws whole across
-    the seam, so this island must not draw its half of them, and
-    `label_px` ({side: px}) narrows the edge labels on a side that now
-    shares a seam gutter with the neighbouring board instead of owning
-    a full margin."""
-    px = PxMap(lattice)
-    S = []
-    add = S.append
+# --------------------------------------------------------- island layers
+#
+# An island is painted as a stack of layers, back to front: casing,
+# rails, grid, parts, passives, the level stack, then the routed wires
+# on top. Each layer is its own function, so the paint ORDER is legible
+# in one screenful (island_body, at the end of this section) instead of
+# being an emergent property of a 470-line function, and so a change to
+# how a part is drawn cannot silently reach into how a wire is. They
+# all share one `add` sink and one PxMap.
+
+
+def _board_frame(add, px, island, stats):
+    """Casing rectangle + the island's title line."""
     bx0 = px.col_x("edgeL") - EDGE_W / 2 + 4
     bx1 = px.col_x("edgeR") + EDGE_W / 2 - 4
     add(f'<rect x="{bx0}" y="{HEAD-26}" width="{bx1-bx0}" '
@@ -419,7 +420,11 @@ def island_body(island, wires, stats, lattice, skip_links=(),
         f'{stats.routed}/{stats.wires} wires routed, '
         f'{stats.underside} underside</tspan></text>')
 
-    # rails
+
+def _rail_bands(add, px, island, lattice, rail_tints):
+    """Rail strips: tinted band, strip name, net name — and the net
+    repeated down the band so a zoomed-in view still says which strip is
+    which (the top/bottom labels are far away on a 63-row board)."""
     for strip in island.board.rails:
         net = island.rails.get(strip, "")
         tint = rail_tints.get(net, "#999")
@@ -431,103 +436,120 @@ def island_body(island, wires, stats, lattice, skip_links=(),
             f'text-anchor="middle">{esc(strip)}</text>')
         add(f'<text x="{x}" y="{px.height-6}" class="rail" fill="{tint}" '
             f'text-anchor="middle">{esc(net)}</text>')
-        # repeat the net name down the band so a zoomed-in view still
-        # says which strip is which (top/bottom labels are far away on
-        # a 63-row board)
         for rr in range(12, lattice.rows - 4, 16):
             yy = px.y(rr)
             add(f'<text x="{x}" y="{yy}" class="rail" fill="{tint}" '
                 f'fill-opacity="0.55" text-anchor="middle" '
                 f'transform="rotate(90 {x} {yy})">{esc(net)}</text>')
 
-    # built-in rail end-jumper pads (top = PWR pair, bottom = GND pair).
-    # The PWR label has three possible states, and only one of them may
-    # ever claim "one net": if BOTH + strips are declared and their net
-    # names differ, bridging them shorts two supplies -- warn. If BOTH
-    # are declared and equal, the model has verified they are one net,
-    # and the bridge is the intended rail-common tie -- show that
-    # affordance. If FEWER THAN TWO are declared, the model has verified
-    # nothing about the missing strip -- it may carry no net at all, or
-    # one this design just never mentions -- so claiming "one net" would
-    # assert a fact the design never established; name whichever
-    # position is missing instead, which is neutral and true either way.
-    if island.board.rails:
-        gnd_bridged = any(
-            getattr(j, "offgrid", False) for j in island.jumpers)
-        plus_positions = [p for p in ("top+", "bot+") if p in island.rails]
-        plus_nets = {island.rails[p] for p in plus_positions}
-        rx = px.col_x("ravine")
-        for (yy, kind) in ((HEAD - 14, "PWR"), (px.height - 16, "GND")):
-            for dx in (-5, 5):
-                add(f'<circle cx="{rx+dx}" cy="{yy}" r="3.2" fill="#fff" '
-                    f'stroke="#8a8a8a" stroke-width="1.4"/>')
-            if kind == "PWR" and len(plus_nets) > 1:
-                add(f'<text x="{rx+14}" y="{yy+3}" class="pv" '
-                    f'fill="#b0413e">PWR pads — NEVER bridge '
-                    f'(+ rails are different nets)</text>')
-            elif kind == "PWR" and len(plus_positions) == 2:
-                add(f'<text x="{rx+14}" y="{yy+3}" class="pv" '
-                    f'fill="#888">PWR end-jumper pads '
-                    f'(+ rails are one net)</text>')
-            elif kind == "PWR":
-                missing = [p for p in ("top+", "bot+")
-                           if p not in island.rails]
-                add(f'<text x="{rx+14}" y="{yy+3}" class="pv" '
-                    f'fill="#888">PWR end-jumper pads '
-                    f'({"/".join(missing)} not wired in this design)</text>')
-            elif gnd_bridged:
-                add(f'<line x1="{rx-5}" y1="{yy}" x2="{rx+5}" y2="{yy}" '
-                    f'stroke="#222" stroke-width="4" '
-                    f'stroke-linecap="round"/>')
-                add(f'<text x="{rx+14}" y="{yy+3}" class="pv" '
-                    f'fill="#222">GND end-jumper: solder blob here '
-                    f'(rail-common tie)</text>')
-            else:
-                add(f'<text x="{rx+14}" y="{yy+3}" class="pv" '
-                    f'fill="#888">GND end-jumper pads (unbridged)</text>')
 
-    # mounting-hole keep-outs (screws in the ravine)
-    if island.board.ravine_keepouts:
-        rx = px.col_x("ravine")
-        rows_ko = sorted(island.board.ravine_keepouts)
-        clusters, cur = [], [rows_ko[0]]
-        for r in rows_ko[1:]:
-            if r == cur[-1] + 1:
-                cur.append(r)
-            else:
-                clusters.append(cur)
-                cur = [r]
-        clusters.append(cur)
-        for cl in clusters:
-            y0 = px.y(cl[0]) - CELL / 2
-            add(f'<rect x="{rx-8}" y="{y0}" width="16" '
-                f'height="{len(cl)*CELL}" rx="4" fill="#b0413e" '
-                f'fill-opacity="0.10" stroke="#b0413e" '
-                f'stroke-opacity="0.35" stroke-dasharray="3 2">'
-                f'<title>mounting-hole keep-out (rows '
-                f'{cl[0]}-{cl[-1]}): no straddling parts, no ravine '
-                f'crossings</title></rect>')
-            cy = (px.y(cl[0]) + px.y(cl[-1])) / 2
-            add(f'<circle cx="{rx}" cy="{cy}" r="5.5" fill="#e8e4d8" '
-                f'stroke="#8a8a8a" stroke-width="1.5"/>')
-            add(f'<line x1="{rx-3.6}" y1="{cy}" x2="{rx+3.6}" y2="{cy}" '
+def _end_jumper_pads(add, px, island):
+    """The board's built-in rail end-jumper pads (top = PWR pair, bottom
+    = GND pair).
+
+    The PWR label has three possible states, and only one of them may
+    ever claim "one net": if BOTH + strips are declared and their net
+    names differ, bridging them shorts two supplies -- warn. If BOTH are
+    declared and equal, the model has verified they are one net, and the
+    bridge is the intended rail-common tie -- show that affordance. If
+    FEWER THAN TWO are declared, the model has verified nothing about
+    the missing strip -- it may carry no net at all, or one this design
+    just never mentions -- so claiming "one net" would assert a fact the
+    design never established; name whichever position is missing
+    instead, which is neutral and true either way."""
+    if not island.board.rails:
+        return
+    gnd_bridged = any(
+        getattr(j, "offgrid", False) for j in island.jumpers)
+    plus_positions = [p for p in ("top+", "bot+") if p in island.rails]
+    plus_nets = {island.rails[p] for p in plus_positions}
+    rx = px.col_x("ravine")
+    for (yy, kind) in ((HEAD - 14, "PWR"), (px.height - 16, "GND")):
+        for dx in (-5, 5):
+            add(f'<circle cx="{rx+dx}" cy="{yy}" r="3.2" fill="#fff" '
                 f'stroke="#8a8a8a" stroke-width="1.4"/>')
+        if kind == "PWR" and len(plus_nets) > 1:
+            add(f'<text x="{rx+14}" y="{yy+3}" class="pv" '
+                f'fill="#b0413e">PWR pads — NEVER bridge '
+                f'(+ rails are different nets)</text>')
+        elif kind == "PWR" and len(plus_positions) == 2:
+            add(f'<text x="{rx+14}" y="{yy+3}" class="pv" '
+                f'fill="#888">PWR end-jumper pads '
+                f'(+ rails are one net)</text>')
+        elif kind == "PWR":
+            missing = [p for p in ("top+", "bot+")
+                       if p not in island.rails]
+            add(f'<text x="{rx+14}" y="{yy+3}" class="pv" '
+                f'fill="#888">PWR end-jumper pads '
+                f'({"/".join(missing)} not wired in this design)</text>')
+        elif gnd_bridged:
+            add(f'<line x1="{rx-5}" y1="{yy}" x2="{rx+5}" y2="{yy}" '
+                f'stroke="#222" stroke-width="4" '
+                f'stroke-linecap="round"/>')
+            add(f'<text x="{rx+14}" y="{yy+3}" class="pv" '
+                f'fill="#222">GND end-jumper: solder blob here '
+                f'(rail-common tie)</text>')
+        else:
+            add(f'<text x="{rx+14}" y="{yy+3}" class="pv" '
+                f'fill="#888">GND end-jumper pads (unbridged)</text>')
 
-    # hole grid + row numbers (in the reserved strip inside the rails —
-    # gutter/hole wires can never route over them)
-    hole_cols = [i for i in range(len(lattice.cols))
-                 if lattice.half(i) is not None]
+
+def _ravine_keepouts(add, px, island):
+    """Mounting-hole keep-outs (screws in the ravine), drawn as one
+    capsule per run of consecutive rows."""
+    if not island.board.ravine_keepouts:
+        return
+    rx = px.col_x("ravine")
+    rows_ko = sorted(island.board.ravine_keepouts)
+    clusters, cur = [], [rows_ko[0]]
+    for r in rows_ko[1:]:
+        if r == cur[-1] + 1:
+            cur.append(r)
+        else:
+            clusters.append(cur)
+            cur = [r]
+    clusters.append(cur)
+    for cl in clusters:
+        y0 = px.y(cl[0]) - CELL / 2
+        add(f'<rect x="{rx-8}" y="{y0}" width="16" '
+            f'height="{len(cl)*CELL}" rx="4" fill="#b0413e" '
+            f'fill-opacity="0.10" stroke="#b0413e" '
+            f'stroke-opacity="0.35" stroke-dasharray="3 2">'
+            f'<title>mounting-hole keep-out (rows '
+            f'{cl[0]}-{cl[-1]}): no straddling parts, no ravine '
+            f'crossings</title></rect>')
+        cy = (px.y(cl[0]) + px.y(cl[-1])) / 2
+        add(f'<circle cx="{rx}" cy="{cy}" r="5.5" fill="#e8e4d8" '
+            f'stroke="#8a8a8a" stroke-width="1.5"/>')
+        add(f'<line x1="{rx-3.6}" y1="{cy}" x2="{rx+3.6}" y2="{cy}" '
+            f'stroke="#8a8a8a" stroke-width="1.4"/>')
+
+
+def _hole_cols(lattice):
+    return [i for i in range(len(lattice.cols))
+            if lattice.half(i) is not None]
+
+
+def _number_strip_x(px, lattice):
+    """x of the two reserved row-number strips, just inside the rails."""
     try:
-        nx_l = px.col_x("gutterL") - 4.5 - NUM_W / 2
-        nx_r = px.col_x("gutterR") + 4.5 + NUM_W / 2
+        return (px.col_x("gutterL") - 4.5 - NUM_W / 2,
+                px.col_x("gutterR") + 4.5 + NUM_W / 2)
     except (KeyError, ValueError):
-        nx_l = px.x(hole_cols[0]) - 14      # rail-less boards: no gutter
-        nx_r = px.x(hole_cols[-1]) + 14
-    # Every fifth row carries a full-width guide and a darker, bolder
-    # number. Counting holes by eye is the single most error-prone thing
-    # about working from a printed sheet, and an unbroken column of
-    # identical grey digits gives the eye nothing to land on — the
-    # decade lines are what let you find row 43 without counting.
+        cols = _hole_cols(lattice)      # rail-less boards: no gutter
+        return px.x(cols[0]) - 14, px.x(cols[-1]) + 14
+
+
+def _hole_grid(add, px, lattice):
+    """The hole dots, the row numbers in their reserved strips, and a
+    full-width guide every fifth row.
+
+    Counting holes by eye is the single most error-prone thing about
+    working from a printed sheet, and an unbroken column of identical
+    grey digits gives the eye nothing to land on — the decade lines are
+    what let you find row 43 without counting."""
+    hole_cols = _hole_cols(lattice)
+    nx_l, nx_r = _number_strip_x(px, lattice)
     for r in range(1, lattice.rows + 1):
         y = px.y(r)
         major = (r % 5 == 0)
@@ -543,17 +565,22 @@ def island_body(island, wires, stats, lattice, skip_links=(),
         for xi in hole_cols:
             add(f'<circle cx="{px.x(xi)}" cy="{y}" r="1.6" fill="#c9c3b3"/>')
 
-    # Hole-column letters, top AND bottom. These did not exist before,
-    # which meant the one axis you address every wire by (`43h`) was the
-    # one the sheet never labelled — you counted columns from the ravine
-    # every time.
-    for xi in hole_cols:
+
+def _column_letters(add, px, lattice):
+    """Hole-column letters, top AND bottom. These did not exist before,
+    which meant the one axis you address every wire by (`43h`) was the
+    one the sheet never labelled — you counted columns from the ravine
+    every time."""
+    for xi in _hole_cols(lattice):
         letter = lattice.name(xi)
         for yy in (HEAD - 6, px.height - 12):
             add(f'<text x="{px.x(xi)}" y="{yy}" class="cn" '
                 f'text-anchor="middle">{esc(letter)}</text>')
 
-    # parts
+
+def _parts(add, px, island):
+    """Footprint parts: the body rect, its soft overhang keep-out, a
+    per-pin label, and the ref rotated down the middle."""
     for part in island.parts:
         pins = part.pins
         rows = [a.row for a in pins.values()]
@@ -599,11 +626,15 @@ def island_body(island, wires, stats, lattice, skip_links=(),
             f'transform="rotate(90 {midx} {midy})">{esc(part.ref)}</text>')
         add('</g>')
 
-    # passives — rail-to-rail entry decouplers stagger down from row 1.
-    # Value badges are DEFERRED and drawn after the wire pipes so they
-    # float above the pipe field like map labels (each in its own group
-    # sharing the passive's data-w/data-pk, so toggles + click-isolate
-    # still treat badge and body as one).
+
+def _passives(add, px, island, rail_tints):
+    """Two-terminal passives. Rail-to-rail entry decouplers stagger down
+    from row 1.
+
+    Returns the value badges, which are DEFERRED: the caller emits them
+    after the wire pipes so they float above the pipe field like map
+    labels. Each badge carries the passive's own data-w/data-pk, so
+    layer toggles and click-isolate still treat badge and body as one."""
     rail_rail_n = 0
     badges = []
     deferred_badges = []
@@ -673,18 +704,18 @@ def island_body(island, wires, stats, lattice, skip_links=(),
             f'<text x="{mx}" y="{my+3.5}" class="pv" text-anchor="middle" '
             f'fill="{col}">{esc(lab)}</text></g>')
         add('</g>')
+    return deferred_badges
 
-    _level_layer(add, px, island)
 
-    # routed wires — Flow-Free pipes: fat rounded strokes snapped to
-    # the grid, a board-coloured casing under each top run so plain
-    # crossings separate visually; underside runs are translucent
-    # (KiCad-style), leads fly off thin with an arrow, interlinks land
-    # on a ghost bus past the edge. Each wire is grouped so
-    # click-to-highlight can isolate it. Edge labels get greedy
-    # per-side lanes (sorted by row) so labels never stack.
-    wires = [w for w in wires
-             if not (w.link and w.link in skip_links)]
+# ------------------------------------------------------- the wire layer
+
+
+def _edge_label_lanes(px, wires, lattice, label_px):
+    """Greedy per-side lanes for the edge labels, plus the two side
+    policies the wire layer needs.
+
+    Labels are laid out sorted by row and pushed down 10.5px at a time,
+    so a crowded side stacks downward instead of overprinting itself."""
 
     def room_on(side):
         return (label_px or {}).get(side, MARGIN)
@@ -712,6 +743,162 @@ def island_body(island, wires, stats, lattice, skip_links=(),
         ly = max(want, last.get(side, -1e9) + 10.5)
         last[side] = ly
         label_y[(key, ex, ey)] = ly
+    return label_y, print_side, room_on
+
+
+def _pipe_segments(add, w, pts, colour, jx, jy, fly, title):
+    """One wire's pipes: each maximal run of same-layer points becomes a
+    rounded Flow-Free path."""
+    i = 0
+    while i < len(pts) - 1:
+        j = i
+        while j + 1 < len(pts) and pts[j + 1][2] == pts[i][2]:
+            j += 1
+        seg = pts[i:j + 1]
+        if len(seg) >= 2:
+            d = _pipe_d([(p[0] + jx, p[1] + jy) for p in seg])
+            lyr = "seg-bot" if seg[0][2] == BOT else "seg-top"
+            caps = ('fill="none" stroke-linecap="round" '
+                    'stroke-linejoin="round"')
+            if w.fail:
+                add(f'<path class="{lyr}" d="{d}" {caps} '
+                    f'stroke="{colour}" stroke-width="3" '
+                    f'stroke-dasharray="2 6">'
+                    f'<title>{esc(title)}</title></path>')
+            elif seg[0][2] == BOT:
+                # KiCad-style: underside pipes are solid but drawn
+                # translucent (CSS, driven by the active-layer
+                # radio) — no casing, so top pipes read as above
+                add(f'<path class="{lyr}" d="{d}" {caps} '
+                    f'stroke="{colour}" stroke-width="5.6">'
+                    f'<title>{esc(title)}</title></path>')
+            elif fly:
+                # interlink fly-over: airborne above everything —
+                # no casing (it does not sit on the surface)
+                add(f'<path class="{lyr}" d="{d}" {caps} '
+                    f'stroke="{colour}" stroke-width="4.4" '
+                    f'stroke-opacity="0.9">'
+                    f'<title>{esc(title)}</title></path>')
+            else:
+                # casing: a hairline board-colour outline — wide
+                # enough to read as a break at crossings, narrow
+                # enough not to bite into a parallel neighbour pipe
+                add(f'<path class="{lyr}" d="{d}" {caps} '
+                    f'stroke="{BOARD_BG}" stroke-width="7.4"/>')
+                add(f'<path class="{lyr}" d="{d}" {caps} '
+                    f'stroke="{colour}" stroke-width="5.6">'
+                    f'<title>{esc(title)}</title></path>')
+        i = max(j, i + 1)
+
+
+def _lead_glyph(add, px, w, colour, title):
+    """A lead is drawn as a LOCAL glyph at its hole — a 45° up-and-away
+    arrow rising toward its label's margin side — not as a line: several
+    leads on one row would otherwise collapse into an unreadable
+    collinear train."""
+    hx, hy = px.x(w.path[0].x), px.y(w.path[0].y)
+    sgn = 1 if w.path[-1].x > w.path[0].x else -1
+    tx2, ty2 = round(hx + sgn * 10.5, 1), round(hy - 10.5, 1)
+    add(f'<path class="seg-top lead-fly" '
+        f'd="M {round(hx+sgn*3.5, 1)},{round(hy-3.5, 1)} '
+        f'L {tx2},{ty2} '
+        f'M {round(tx2-sgn*5.5, 1)},{ty2} L {tx2},{ty2} '
+        f'L {tx2},{round(ty2+5.5, 1)}" fill="none" '
+        f'stroke="{colour}" stroke-width="2.6" '
+        f'stroke-linecap="round" stroke-linejoin="round">'
+        f'<title>{esc(title)}</title></path>')
+
+
+def _edge_labels(add, px, w, lattice, label_y, print_side, room_on, gx,
+                 label_px):
+    """The off-board text for whichever of this wire's ends land on a
+    board edge."""
+    ends = [wpt for wpt in (w.path[0], w.path[-1])
+            if lattice.is_edge(wpt.x)]
+    for e in ends:
+        side = lattice.name(e.x)
+        pside = print_side(side)
+        ly = label_y.get((w.key, e.x, e.y), px.y(e.y) + 3)
+        gpad = GHOST_DX + 8 if (gx is not None and pside == side) else 8
+        # flipped labels carry an arrow toward the edge the wire
+        # really leaves by — added AFTER the fit so truncation can
+        # never eat the one glyph that says "this exits the far side"
+        mark = "" if pside == side else (
+            " →" if pside == "edgeL" else "← ")
+        shown, full = _fit_label(
+            w.label, room_on(pside) - gpad - 6 - len(mark) * LEAD_CH_PX)
+        if not shown:      # no room at all — hover carries it
+            continue
+        shown = shown + mark if pside == "edgeL" else mark + shown
+        tip = f"<title>{esc(full)}</title>" if full else ""
+        anchor = ' text-anchor="end"' if pside == "edgeL" else ""
+        lx = px.col_x(pside) + (-gpad if pside == "edgeL" else gpad)
+        # halo: in a panel a label may sit in the seam gutter, where
+        # the stitched wires' lanes run right over it
+        halo = ' class="lead lyr-label halo"' if label_px else \
+            ' class="lead lyr-label"'
+        add(f'<text x="{round(lx, 1)}" y="{ly}"{halo}'
+            f'{anchor}>{esc(shown)}{tip}</text>')
+
+
+def _end_pucks(add, px, island, w, lattice, colour, title, jx, jy, fly, gx,
+               rail_tints):
+    """Both ends of one wire: a rail marker where it lands on a strip,
+    and a Flow-Free puck — solid for a surface connection, hollow when
+    the run departs underneath, off on the ghost bus when it flies."""
+    for i_end, c in ((0, w.path[0]), (len(w.path) - 1, w.path[-1])):
+        cname = lattice.name(c.x)
+        if cname.startswith("rail:"):
+            _rail_marker(add, px, island, cname[5:], c.y, rail_tints)
+        if fly and i_end > 0:
+            # far end is off-board: the interlink puck lands on the
+            # ghost bus; a lead just fades out past its arrow
+            if gx is not None:
+                add(f'<circle class="seg-top" cx="{gx}" '
+                    f'cy="{px.y(c.y)}" r="4.8" fill="{colour}">'
+                    f'<title>{esc(title)}</title></circle>')
+            continue
+        nb = w.path[1] if i_end == 0 else w.path[-2]
+        if len(w.path) > 1 and nb.layer == BOT:
+            # hollow puck: the run leaves this terminal UNDERNEATH
+            add(f'<circle class="seg-top" cx="{px.x(c.x)+jx}" '
+                f'cy="{px.y(c.y)+jy}" r="4.8" fill="{colour}">'
+                f'<title>terminal — the run departs on the '
+                f'UNDERSIDE here — {esc(title)}</title></circle>')
+            add(f'<circle class="seg-top" cx="{px.x(c.x)+jx}" '
+                f'cy="{px.y(c.y)+jy}" r="1.9" fill="#fff"/>')
+        else:
+            # Flow-Free endpoint puck (solid = surface connection)
+            add(f'<circle class="seg-top" cx="{px.x(c.x)+jx}" '
+                f'cy="{px.y(c.y)+jy}" r="4.8" fill="{colour}"/>')
+
+
+def _ghost_buses(add, px, ghost_rows):
+    """The off-board rails interlinks land on — connected to something
+    real, just not part of THIS island."""
+    for side, ys in sorted(ghost_rows.items()):
+        bx = round(px.col_x("edgeR" if side == "R" else "edgeL")
+                   + (GHOST_DX if side == "R" else -GHOST_DX), 1)
+        y0, y1 = min(ys) - 12, max(ys) + 12
+        add(f'<line class="ghost" x1="{bx}" y1="{y0}" x2="{bx}" '
+            f'y2="{y1}" stroke="#8a8a8a" stroke-width="3.4" '
+            f'stroke-dasharray="7 5" stroke-linecap="round" '
+            f'opacity="0.55"><title>off-board bus — these wires '
+            f'continue beyond this island</title></line>')
+
+
+def _wire_layer(add, px, island, wires, lattice, label_px, rail_tints):
+    """Every routed run, as Flow-Free pipes: fat rounded strokes snapped
+    to the grid, a board-coloured casing under each top run so plain
+    crossings separate visually; underside runs are translucent
+    (KiCad-style), leads fly off thin with an arrow, interlinks land on
+    a ghost bus past the edge. Each wire is one group so click-to-
+    highlight can isolate it.
+
+    Returns the edge-label lanes, because a crowded side can stack
+    labels below the last row and only the caller can grow the canvas."""
+    label_y, print_side, room_on = _edge_label_lanes(
+        px, wires, lattice, label_px)
     co_run = _co_run_keys(wires)
     ghost_rows = {}     # side -> [y px] of interlink ghost-bus landings
     for w in wires:
@@ -738,129 +925,49 @@ def island_body(island, wires, stats, lattice, skip_links=(),
             pts[-1] = (gx, ey, TOP)
             ghost_rows.setdefault("R" if sgn > 0 else "L", []).append(ey)
         if fly and w.kind == "lead":
-            # a lead is drawn as a LOCAL glyph at its hole (45° arrow),
-            # not a line — several leads on one row would otherwise
-            # collapse into an unreadable collinear train
             pts = pts[:1]
-        i = 0
-        while i < len(pts) - 1:
-            j = i
-            while j + 1 < len(pts) and pts[j + 1][2] == pts[i][2]:
-                j += 1
-            seg = pts[i:j + 1]
-            if len(seg) >= 2:
-                d = _pipe_d([(p[0] + jx, p[1] + jy) for p in seg])
-                lyr = "seg-bot" if seg[0][2] == BOT else "seg-top"
-                caps = ('fill="none" stroke-linecap="round" '
-                        'stroke-linejoin="round"')
-                if w.fail:
-                    add(f'<path class="{lyr}" d="{d}" {caps} '
-                        f'stroke="{colour}" stroke-width="3" '
-                        f'stroke-dasharray="2 6">'
-                        f'<title>{esc(title)}</title></path>')
-                elif seg[0][2] == BOT:
-                    # KiCad-style: underside pipes are solid but drawn
-                    # translucent (CSS, driven by the active-layer
-                    # radio) — no casing, so top pipes read as above
-                    add(f'<path class="{lyr}" d="{d}" {caps} '
-                        f'stroke="{colour}" stroke-width="5.6">'
-                        f'<title>{esc(title)}</title></path>')
-                elif fly:
-                    # interlink fly-over: airborne above everything —
-                    # no casing (it does not sit on the surface)
-                    add(f'<path class="{lyr}" d="{d}" {caps} '
-                        f'stroke="{colour}" stroke-width="4.4" '
-                        f'stroke-opacity="0.9">'
-                        f'<title>{esc(title)}</title></path>')
-                else:
-                    # casing: a hairline board-colour outline — wide
-                    # enough to read as a break at crossings, narrow
-                    # enough not to bite into a parallel neighbour pipe
-                    add(f'<path class="{lyr}" d="{d}" {caps} '
-                        f'stroke="{BOARD_BG}" stroke-width="7.4"/>')
-                    add(f'<path class="{lyr}" d="{d}" {caps} '
-                        f'stroke="{colour}" stroke-width="5.6">'
-                        f'<title>{esc(title)}</title></path>')
-            i = max(j, i + 1)
+        _pipe_segments(add, w, pts, colour, jx, jy, fly, title)
         if fly and w.kind == "lead" and w.path:
-            # the lead glyph: a 45° up-and-away arrow rising from the
-            # hole toward its label's margin side
-            hx, hy = px.x(w.path[0].x), px.y(w.path[0].y)
-            sgn = 1 if w.path[-1].x > w.path[0].x else -1
-            tx2, ty2 = round(hx + sgn * 10.5, 1), round(hy - 10.5, 1)
-            add(f'<path class="seg-top lead-fly" '
-                f'd="M {round(hx+sgn*3.5, 1)},{round(hy-3.5, 1)} '
-                f'L {tx2},{ty2} '
-                f'M {round(tx2-sgn*5.5, 1)},{ty2} L {tx2},{ty2} '
-                f'L {tx2},{round(ty2+5.5, 1)}" fill="none" '
-                f'stroke="{colour}" stroke-width="2.6" '
-                f'stroke-linecap="round" stroke-linejoin="round">'
-                f'<title>{esc(title)}</title></path>')
-        ends = [wpt for wpt in (w.path[0], w.path[-1])
-                if lattice.is_edge(wpt.x)]
-        for e in ends:
-            side = lattice.name(e.x)
-            pside = print_side(side)
-            ly = label_y.get((w.key, e.x, e.y), px.y(e.y) + 3)
-            gpad = GHOST_DX + 8 if (gx is not None and pside == side) else 8
-            # flipped labels carry an arrow toward the edge the wire
-            # really leaves by — added AFTER the fit so truncation can
-            # never eat the one glyph that says "this exits the far side"
-            mark = "" if pside == side else (
-                " →" if pside == "edgeL" else "← ")
-            shown, full = _fit_label(
-                w.label, room_on(pside) - gpad - 6 - len(mark) * LEAD_CH_PX)
-            if not shown:      # no room at all — hover carries it
-                continue
-            shown = shown + mark if pside == "edgeL" else mark + shown
-            tip = f"<title>{esc(full)}</title>" if full else ""
-            anchor = ' text-anchor="end"' if pside == "edgeL" else ""
-            lx = px.col_x(pside) + (-gpad if pside == "edgeL" else gpad)
-            # halo: in a panel a label may sit in the seam gutter, where
-            # the stitched wires' lanes run right over it
-            halo = ' class="lead lyr-label halo"' if label_px else \
-                ' class="lead lyr-label"'
-            add(f'<text x="{round(lx, 1)}" y="{ly}"{halo}'
-                f'{anchor}>{esc(shown)}{tip}</text>')
-        for i_end, c in ((0, w.path[0]), (len(w.path) - 1, w.path[-1])):
-            cname = lattice.name(c.x)
-            if cname.startswith("rail:"):
-                _rail_marker(add, px, island, cname[5:], c.y, rail_tints)
-            if fly and i_end > 0:
-                # far end is off-board: the interlink puck lands on the
-                # ghost bus; a lead just fades out past its arrow
-                if gx is not None:
-                    add(f'<circle class="seg-top" cx="{gx}" '
-                        f'cy="{px.y(c.y)}" r="4.8" fill="{colour}">'
-                        f'<title>{esc(title)}</title></circle>')
-                continue
-            nb = w.path[1] if i_end == 0 else w.path[-2]
-            if len(w.path) > 1 and nb.layer == BOT:
-                # hollow puck: the run leaves this terminal UNDERNEATH
-                add(f'<circle class="seg-top" cx="{px.x(c.x)+jx}" '
-                    f'cy="{px.y(c.y)+jy}" r="4.8" fill="{colour}">'
-                    f'<title>terminal — the run departs on the '
-                    f'UNDERSIDE here — {esc(title)}</title></circle>')
-                add(f'<circle class="seg-top" cx="{px.x(c.x)+jx}" '
-                    f'cy="{px.y(c.y)+jy}" r="1.9" fill="#fff"/>')
-            else:
-                # Flow-Free endpoint puck (solid = surface connection)
-                add(f'<circle class="seg-top" cx="{px.x(c.x)+jx}" '
-                    f'cy="{px.y(c.y)+jy}" r="4.8" fill="{colour}"/>')
+            _lead_glyph(add, px, w, colour, title)
+        _edge_labels(add, px, w, lattice, label_y, print_side, room_on,
+                     gx, label_px)
+        _end_pucks(add, px, island, w, lattice, colour, title, jx, jy,
+                   fly, gx, rail_tints)
         add('</g>')
+    _ghost_buses(add, px, ghost_rows)
+    return label_y
 
-    # ghost buses: the off-board rails interlinks land on — connected
-    # to something real, just not part of THIS island
-    for side, ys in sorted(ghost_rows.items()):
-        bx = round(px.col_x("edgeR" if side == "R" else "edgeL")
-                   + (GHOST_DX if side == "R" else -GHOST_DX), 1)
-        y0, y1 = min(ys) - 12, max(ys) + 12
-        add(f'<line class="ghost" x1="{bx}" y1="{y0}" x2="{bx}" '
-            f'y2="{y1}" stroke="#8a8a8a" stroke-width="3.4" '
-            f'stroke-dasharray="7 5" stroke-linecap="round" '
-            f'opacity="0.55"><title>off-board bus — these wires '
-            f'continue beyond this island</title></line>')
 
+def island_body(island, wires, stats, lattice, skip_links=(),
+                label_px=None, *, rail_tints):
+    """SVG content for one island in its own coordinates, plus its
+    PxMap. A panel translates several of these into one <svg>;
+    `skip_links` names cross-island links the panel draws whole across
+    the seam, so this island must not draw its half of them, and
+    `label_px` ({side: px}) narrows the edge labels on a side that now
+    shares a seam gutter with the neighbouring board instead of owning
+    a full margin.
+
+    The body of this function is the island's paint order, back to
+    front — read it as the layer stack, and each layer's own function
+    for how that layer draws."""
+    px = PxMap(lattice)
+    S = []
+    add = S.append
+
+    _board_frame(add, px, island, stats)
+    _rail_bands(add, px, island, lattice, rail_tints)
+    _end_jumper_pads(add, px, island)
+    _ravine_keepouts(add, px, island)
+    _hole_grid(add, px, lattice)
+    _column_letters(add, px, lattice)
+    _parts(add, px, island)
+    deferred_badges = _passives(add, px, island, rail_tints)
+    _level_layer(add, px, island)
+    label_y = _wire_layer(
+        add, px, island,
+        [w for w in wires if not (w.link and w.link in skip_links)],
+        lattice, label_px, rail_tints)
     S.extend(deferred_badges)   # value badges float above the pipes
 
     # edge labels stack downward when a side is crowded and can end up
