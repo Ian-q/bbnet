@@ -153,6 +153,9 @@ own index):
 | B11 voltage-rating | a rated part across a known power net: error when the rail exceeds the rating, warning on thin derating |
 | B12 in-node detour | a wire landing in one hole of a half-row and then crawling across its own node to leave — waivable via `in_node_waivers` |
 | B13 half-row landing | an endpoint left as a bare half-row (`39L`) whose only remaining holes are taken or under a part body |
+| B14 link support | a link bar bonded at a position with no riser reaching its level — the bar cannot land there |
+| B15 link stray pin | an unclipped bar position the author never listed, sitting on a riser: the pin bonds a net nobody asked for |
+| B16 link stock | a bar cut longer than the stock it is cut from — a purchasing fact, so a warning |
 
 B12 and B13 measure **routed geometry**, not connectivity: they need the
 autorouter to have resolved a bare half-row like `40R` to the hole it
@@ -240,6 +243,37 @@ body's footprint under its own level.
 
 The riser's *pin* still occupies its hole for B1 purposes — the socket is
 above the board, but the pin is in it.
+
+### Link bars
+
+A **link bar** is a rigid 1×N part plugged into risers at one level — the
+thing that replaces a fistful of jumpers with one exact-length component.
+All N positions are **one conductor**, which is what makes it useful (a
+single 3V3 tap fans out to five things) and also what makes it dangerous:
+the pins you didn't want still physically exist.
+
+So every position the bar covers is one of three things, and the YAML has
+to say which:
+
+```yaml
+links:
+  - ref: LK1
+    level: 1
+    connects: [20a, 22a, 24a]   # bonded on purpose; each needs a riser
+    clipped:  [21a, 23a]        # pins snipped off
+    stock: 5                    # positions per bar as bought
+    fab: pcb-rail               # or bent-wire
+```
+
+Anything the bar spans but neither list mentions is a **float** — the pin
+is there but nothing is under it, so it hangs in free air. That's the
+common case and it's harmless.
+
+Only *intent* separates a deliberate fan-out from an accidental short,
+which is why the model insists you write it down. A bar runs along a row
+or down a hole column, never diagonally and never across the ravine.
+Clipped positions still count toward the bar's length: snipping a pin
+doesn't shorten the PCB it was on.
 
 ## Configuration semantics
 
