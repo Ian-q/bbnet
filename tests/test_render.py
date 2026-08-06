@@ -404,3 +404,59 @@ def test_badges_stay_out_of_the_row_number_strips():
     # a badge wider than the whole band centres rather than picking a
     # side to overflow
     assert render._badge_x((lo, hi), 40.0, 900.0) == 300.0
+
+
+# ------------------------------------------------- header/footer bands
+
+def _texts(svg):
+    """(x, y, class, text) for every <text> in an island body."""
+    import re
+    out = []
+    for m in re.finditer(
+            r'<text x="([-\d.]+)" y="([-\d.]+)"[^>]*class="([^"]+)"[^>]*>'
+            r'([^<]*)', svg):
+        out.append((float(m.group(1)), float(m.group(2)),
+                    m.group(3), m.group(4)))
+    return out
+
+
+def test_rail_names_do_not_print_on_top_of_each_other():
+    """A rail strip is 12px wide and its pair-mate's centre is 18px
+    away, but a name like "5V_DIGITAL" is far wider than either — no
+    single line can hold a pair side by side, which is why "3V3" and
+    "GND" used to print as one word. They alternate between two
+    sub-lines instead."""
+    svg = _left_svg()
+    by_line = {}
+    for x, y, cls, txt in _texts(svg):
+        if cls == "rail" and txt:
+            by_line.setdefault(y, []).append((x, txt))
+    assert by_line, "no rail labels rendered"
+    for y, items in by_line.items():
+        items.sort()
+        for (x1, t1), (x2, t2) in zip(items, items[1:]):
+            # 9px bold ui-monospace, centred: half of each name plus a
+            # gap has to fit in the space between the two centres
+            need = (len(t1) + len(t2)) * 5.4 / 2
+            assert x2 - x1 >= need, (
+                f"{t1!r} and {t2!r} overlap on line y={y}")
+
+
+def test_each_header_line_owns_its_own_row():
+    """Four kinds of furniture used to print inside 12px above row 1.
+    Assert the stack has real gaps, not that it has particular values —
+    the numbers are tuning, the separation is the contract."""
+    lines = sorted([render.HDR_TITLE, render.HDR_BOARD, *render.HDR_RAIL,
+                    render.HDR_PADS, render.HDR_COLS])
+    for a, b in zip(lines, lines[1:]):
+        assert b - a >= 5, f"header lines {a} and {b} collide"
+    row1 = render.HEAD + render.CELL / 2
+    assert row1 - render.HDR_COLS >= 8, "column letters crowd row 1"
+
+
+def test_the_end_jumper_caption_clears_the_column_letters():
+    """The caption is a whole sentence starting at the ravine and
+    running right, so on a shared line it printed straight across
+    letters f-j."""
+    assert abs(render.HDR_PADS + 3 - render.HDR_COLS) >= 6
+    assert abs(render.FTR_PADS + 3 - render.FTR_COLS) >= 6
