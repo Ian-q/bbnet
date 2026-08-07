@@ -157,14 +157,17 @@ own index):
 | B15 link stray pin | an unclipped bar position the author never listed, sitting on a riser: the pin bonds a net nobody asked for |
 | B16 link stock | a bar cut longer than the stock it is cut from — a purchasing fact, so a warning |
 | B17 closed-by-default | a switched set closed with nothing driving it, tying two named rails together |
+| B18 wire obstruction | a wire body left lying over a hole with a leg in it, or across a passive body — the router prices both as *soft* costs and will pay them; this reports what it paid |
 
 B9 compares **level**, not just face: two bodies crossing at different
 heights is not a collision, it is what building upward is for.
 
-B12 and B13 measure **routed geometry**, not connectivity: they need the
-autorouter to have resolved a bare half-row like `40R` to the hole it
-really uses. `check` and `report` route and so run them; `todo` and `bom`
-are connectivity-only and skip both the router and these two rules.
+B12, B13 and B18 measure **routed geometry**, not connectivity: they
+need the autorouter to have resolved a bare half-row like `40R` to the
+hole it really uses, and B18 needs the path the wire actually took
+rather than a straight line between its endpoints. `check` and `report`
+route and so run them; `todo` and `bom` are connectivity-only and skip
+both the router and these three rules.
 
 ## Inline parts: `passives:` and `devices:`
 

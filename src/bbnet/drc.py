@@ -34,6 +34,10 @@ Rules (each encodes a real breadboard bug class):
   B17 closed-by-default  a switched set that is closed with nothing
                    driving it, tying two named rails together — a short
                    at power-on, before anything can open it
+  B18 wire obstruction  a wire body left lying over a hole with a leg
+                   in it, or across a passive body — the router prices
+                   both as SOFT costs and will pay them; this reports
+                   what it paid (needs routed geometry)
 
 Note on B9: two bodies crossing at DIFFERENT levels is not a collision.
 That is what building upward is for, so the rule compares level, not
@@ -707,6 +711,50 @@ def rule_halfrow_landing(design, rules, colours, routed=None):
     return out
 
 
+def rule_wire_obstruction(design, rules, colours, routed=None):
+    """B18: a wire body left lying over a hole with a leg in it, or
+    across a passive body.
+
+    B1 compares endpoints and B9 compares passive bodies, so between
+    them nothing ever looked at what a wire's BODY runs over on its way
+    across the board. That is a real bug class and a nasty one, because
+    it is invisible in the netlist: the wire is correct, the nets are
+    correct, and the board is the only place it goes wrong. You cannot
+    solder into a hole another wire is lying on, and a jumper laid over
+    a resistor cannot be probed and chafes.
+
+    The router already prices both — SOLDER_SOFT and PASSIVE_SOFT — as
+    SOFT costs, on purpose: hard-blocking them would make it fail to
+    route rather than return a buildable-but-ugly answer. Soft means the
+    penalty gets paid when a lane is cheap enough, and the wire comes out
+    of the negotiation lying across something. This rule reports what was
+    paid, so a cost that used to be silent becomes a decision.
+
+    Reads the ROUTED path, not a straight line between endpoints. That
+    distinction matters: a jumper is not a chord, it is whatever the
+    autorouter negotiated, and checking the chord would both miss real
+    collisions and invent ones the router had already routed around.
+
+    Warning, not error: the wire IS connectable and buildable, and every
+    fix is a bench call — re-hole the obstructed leg, move the wire's
+    lane, or send the wire underside, where its body hangs in free air
+    and competes for nothing. Silent without routed geometry."""
+    if not routed:
+        return []
+    out = []
+    for iname, (_wires, stats, _lat) in sorted(routed.items()):
+        seen = {}
+        for label, row, col, what in getattr(stats, "obstructions", ()):
+            seen.setdefault((label, what), []).append(f"{row}{col}")
+        for (label, what), where in seen.items():
+            out.append(Violation(
+                "wire obstruction", "warning",
+                f"{iname}: {label} runs over {what} at "
+                f"{', '.join(where)} — re-hole what is under it, move "
+                f"the wire's lane, or set underside: true"))
+    return out
+
+
 def rule_link_support(design, rules, colours):
     """B14: a link bar bonded where it cannot actually land.
 
@@ -824,7 +872,7 @@ def rule_link_stock(design, rules, colours):
 
 
 def run_all(design, rules, colours, routed=None):
-    """Run every rule -> (violations, todos), stable order B1..B17.
+    """Run every rule -> (violations, todos), stable order B1..B18.
 
     `routed` (island -> (wires, stats, lattice) from router.route_design)
     enables the geometry-dependent rules; without it B12 and B13 are
@@ -839,4 +887,5 @@ def run_all(design, rules, colours, routed=None):
         violations.extend(rule(design, rules, colours))
     violations.extend(rule_in_node_detour(design, rules, colours, routed))
     violations.extend(rule_halfrow_landing(design, rules, colours, routed))
+    violations.extend(rule_wire_obstruction(design, rules, colours, routed))
     return violations, todos

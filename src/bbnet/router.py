@@ -100,6 +100,9 @@ class RouteStats:
     # half-row endpoints with no clean hole left (DRC B13 input) —
     # [(kind, label, row, half, rank, hole)]
     landings: list = field(default_factory=list)
+    # top-layer body cells the router had to buy through a soft penalty
+    # (DRC B18 input) — [(label, row, col, what)]
+    obstructions: list = field(default_factory=list)
 
 
 class Lattice:
@@ -804,7 +807,53 @@ class _IslandRouter:
             stats.routed += 1
             routed.append(rw)
         stats.landings = self.landings
+        stats.obstructions = self._obstructions(routed)
         return routed, stats, self.lat
+
+    def _obstructions(self, routed):
+        """Top-layer cells where a routed wire body ends up lying over a
+        hole that already has a leg in it, or across a passive body.
+
+        Both are SOFT costs during search (SOLDER_SOFT / PASSIVE_SOFT),
+        and deliberately so: a router that hard-blocked them would fail
+        to route rather than hand back a buildable-but-ugly answer. But
+        soft means the penalty CAN be paid, and until now nothing said
+        when it had been — the wire just came out of the negotiation
+        lying across a hole the builder still has to solder into. This
+        is the record of what was given up, for DRC B18 to report.
+
+        Underside runs never appear here, and both kinds fall out of the
+        two exemptions below rather than needing a guard of their own —
+        which is worth saying, because an explicit `rw.underside` check
+        reads like it is protecting something and would be dead code:
+
+        - a DECLARED `underside: true` wire is an airwire, never lattice
+          routed, so it is not in `self.wires` and has no `allowed` entry;
+        - a wire the router PROMOTED underside after finding the top face
+          blocked has only its own two terminals on TOP, and a wire's own
+          terminals are exempt anyway.
+
+        Either way the body hangs in free air below the board and competes
+        for nothing up here, which is exactly why sending a blocked wire
+        down there is the standard fix.
+        """
+        allowed = {w.key: w.allowed for w in self.wires}
+        out = []
+        for rw in routed:
+            free = allowed.get(rw.key)
+            if free is None or rw.fail:
+                continue
+            for c in rw.path:
+                if c.layer != TOP or (c.x, c.y) in free:
+                    continue
+                if (c.x, c.y) in self.solder_cells:
+                    what = "a soldered leg"
+                elif (c.x, c.y) in self.passive_cells:
+                    what = "a passive body"
+                else:
+                    continue
+                out.append((rw.label, c.y, self.lat.name(c.x), what))
+        return out
 
 
 class _NetCtx:

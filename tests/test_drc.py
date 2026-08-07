@@ -771,6 +771,130 @@ def test_body_span_survives_an_anchor_pinned_to_a_bare_halfrow():
     assert "bb1" in routed
 
 
+# ------------------------------------- B18 wire obstruction (routed)
+
+def _obstructions(violations):
+    return [x.message for x in violations if x.rule == "wire obstruction"]
+
+
+def test_wire_obstruction_is_silent_without_routing():
+    """B18 measures the routed path, so the connectivity-only commands
+    must not trip over its absence."""
+    _d, v, _t = build(base_island())
+    assert _obstructions(v) == []
+
+
+def test_wire_laid_over_an_occupied_hole_is_flagged():
+    """The canonical shape, and the one that went unseen on a real
+    board: a GND-bus jumper hopping 1j->3j lies flat across 2j, and 2j
+    has a lead soldered in it. B1 sees two clean endpoints and B9 sees
+    no passive pair, so between them nothing looks at what the BODY
+    crosses. You cannot solder into a hole another wire is lying on."""
+    _d, v, _t = _routed_build(_railed(
+        jumpers=[{"from": "1j", "to": "3j", "colour": "BLK"}],
+        leads=[{"at": "2j", "colour": "GRY", "label": "divided out"}]))
+    hits = _obstructions(v)
+    assert len(hits) == 1, hits
+    assert "1j→3j" in hits[0]
+    assert "a soldered leg at 2j" in hits[0]
+
+
+def test_sending_the_blocked_wire_underside_clears_it():
+    """The documented fix, and the reason the rule is a warning rather
+    than an error. An underside body hangs in free air below the board
+    and competes for nothing on the surface, so the same wire with
+    `underside: true` is clean — the rule must not keep nagging about a
+    collision the builder has already resolved by changing level."""
+    _d, v, _t = _routed_build(_railed(
+        jumpers=[{"from": "1j", "to": "3j", "colour": "BLK",
+                  "underside": True}],
+        leads=[{"at": "2j", "colour": "GRY", "label": "divided out"}]))
+    assert _obstructions(v) == []
+
+
+def test_wire_laid_across_a_passive_body_is_flagged():
+    """The other half of the class: no hole involved, the wire simply
+    runs over a resistor lying in its lane. Reported distinctly from a
+    soldered leg because the fix differs — a leg gets re-holed, a body
+    gets re-spanned or lifted to another level."""
+    _d, v, _t = _routed_build(_railed(
+        passives=[{"ref": "R1", "kind": "resistor", "value": "10k",
+                   "from": "5a", "to": "5d"}],
+        jumpers=[{"from": "1c", "to": "9c", "colour": "BLK"}]))
+    hits = _obstructions(v)
+    assert len(hits) == 1, hits
+    assert "a passive body at 5c" in hits[0]
+
+
+def test_a_clear_lane_reports_nothing():
+    """Mutation guard. The same board and the same passive, with the
+    wire routed where nothing is in its way — so the rule is keyed on
+    the path actually crossing something, not on the mere presence of a
+    passive somewhere on the island."""
+    _d, v, _t = _routed_build(_railed(
+        passives=[{"ref": "R1", "kind": "resistor", "value": "10k",
+                   "from": "5a", "to": "5d"}],
+        jumpers=[{"from": "1j", "to": "9j", "colour": "BLK"}]))
+    assert _obstructions(v) == []
+
+
+def test_a_wires_own_landings_are_not_obstructions():
+    """A wire always occupies its own terminal holes, and a rule that
+    counted them would fire on every wire ever placed. The endpoints are
+    exempt by construction (`wire.allowed`); this pins that so a future
+    change to the exemption set cannot pass silently."""
+    _d, v, _t = _routed_build(_railed(
+        jumpers=[{"from": "20c", "to": "20g", "colour": "BLK"}]))
+    assert _obstructions(v) == []
+
+
+def test_wire_obstruction_is_a_warning_not_an_error():
+    """Severity is a contract, not a detail. Every fix is a bench call —
+    re-hole the leg, move the lane, or go underside — and on an as-built
+    board that can mean desoldering. Promoting this to an error would
+    break the check gate on boards that are already built and working,
+    which is how a useful rule gets switched off wholesale."""
+    _d, v, _t = _routed_build(_railed(
+        jumpers=[{"from": "1j", "to": "3j", "colour": "BLK"}],
+        leads=[{"at": "2j", "colour": "GRY", "label": "divided out"}]))
+    hits = [x for x in v if x.rule == "wire obstruction"]
+    assert hits and all(x.severity == "warning" for x in hits)
+
+
+def test_one_finding_per_wire_and_obstacle_kind():
+    """A run crossing several legs is one decision, not several. The
+    holes collect into a single message so a bad LANE reads as a bad
+    lane — the shape a builder can act on — instead of burying the
+    board's other findings under one wire's worth of noise.
+
+    Two is deliberate. It is the most this board forces: at three
+    accumulated SOLDER_SOFT penalties the detour becomes cheaper and the
+    router simply routes around, which is the cost model working and
+    leaves nothing to report."""
+    _d, v, _t = _routed_build(_railed(
+        jumpers=[{"from": "1j", "to": "4j", "colour": "BLK"}],
+        leads=[{"at": "2j", "colour": "GRY", "label": "a"},
+               {"at": "3j", "colour": "GRY", "label": "b"}]))
+    hits = _obstructions(v)
+    assert len(hits) == 1, hits
+    assert "a soldered leg at 2j, 3j" in hits[0]
+
+
+def test_enough_penalty_makes_the_router_route_around_instead():
+    """The companion to the aggregation test, and the reason B18 stays
+    quiet on most boards: the soft cost is a real deterrent, not a
+    formality. Add one more obstructed hole to the lane above and the
+    detour wins, so there is no obstruction left to report. If this ever
+    starts reporting, the cost balance has shifted and the rule will get
+    noisy long before anyone notices why."""
+    _d, v, _t = _routed_build(_railed(
+        jumpers=[{"from": "1j", "to": "5j", "colour": "BLK"}],
+        leads=[{"at": "2j", "colour": "GRY", "label": "a"},
+               {"at": "3j", "colour": "GRY", "label": "b"},
+               {"at": "4j", "colour": "GRY", "label": "c"}]))
+    assert _obstructions(v) == []
+
+
 # --------------------------------------------- B14-B16 link bars (levels)
 
 def _link_island(**over):
