@@ -1426,6 +1426,12 @@ details.help summary{cursor:pointer;color:#7a7263}
 .island .kit{position:sticky;top:12px;max-height:calc(100vh - 24px);
      overflow:auto}
 .island .kit details{margin:0}
+.island.stacked{grid-template-columns:1fr}
+.island.stacked .split{display:none}
+.island.stacked .kit{position:static;max-height:none}
+.kitpos{font:11px ui-monospace;padding:1px 8px;margin-left:10px;
+     border:1px solid #c9c2ad;border-radius:6px;background:#fffdf5;
+     cursor:pointer;vertical-align:2px}
 svg{background:#fff;border:1px solid #ddd;border-radius:10px}
 svg .ttl{font:700 14px ui-sans-serif}
 svg .sub{font:400 11px ui-sans-serif;fill:#888}
@@ -1494,12 +1500,13 @@ body.hide-label svg .pin{display:none}
   .island{grid-template-columns:1fr}
   .island .split{display:none}
   .island .kit{position:static;max-height:none}
+  .kitpos{display:none}
 }
 @media print{
   body{background:#fff;margin:0}
   svg{border:none;break-inside:avoid}
   .island{display:block;break-before:page}
-  .island .split,.zreset{display:none}
+  .island .split,.zreset,.kitpos{display:none}
   .island .kit{position:static;max-height:none;overflow:visible}
   details{break-inside:avoid}
   .layers{display:none}
@@ -1520,6 +1527,35 @@ JS = """
         document.body.classList.toggle('act-bot', rb.value === 'bot');
       });
     });
+  // kitting position: a wide, short board (a multi-board panel) shrinks
+  // to a sliver beside the kitting table, so such boards start with the
+  // table BELOW and get the full page width. A per-board button flips
+  // it; the choice is remembered per board title.
+  document.querySelectorAll('.island').forEach(function (isl) {
+    const svg = isl.querySelector('.board svg'), h2 = isl.querySelector('h2');
+    if (!svg || !h2 || !isl.querySelector('.kit')) return;
+    const vb = svg.getAttribute('viewBox').split(' ').map(Number);
+    const key = 'bbnet-kitpos:' + h2.textContent.slice(0, 80);
+    let below = vb[2] / vb[3] > 2.2;
+    try {
+      const v = localStorage.getItem(key);
+      if (v) below = v === 'below';
+    } catch (e) {}
+    const btn = document.createElement('button');
+    btn.className = 'kitpos';
+    function set(b) {
+      below = b;
+      isl.classList.toggle('stacked', b);
+      btn.textContent = b ? 'kitting table beside' : 'kitting table below';
+    }
+    btn.addEventListener('click', function () {
+      set(!below);
+      try { localStorage.setItem(key, below ? 'below' : 'beside'); }
+      catch (e) {}
+    });
+    h2.appendChild(btn);
+    set(below);
+  });
   // pane resizer: drag the divider to trade board width for kitting
   // width — the board SVG rescales so it always stays fully visible
   document.querySelectorAll('.island .split').forEach(function (sp) {
