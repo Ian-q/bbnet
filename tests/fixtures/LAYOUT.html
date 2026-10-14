@@ -40,6 +40,7 @@ svg .cn{font:bold 9.5px ui-monospace;fill:#3f3a31}
 svg .rail{font:700 9px ui-monospace}
 svg .part{fill:#2b3a4a;fill-opacity:.08;stroke:#2b3a4a;stroke-opacity:.55}
 svg .pin{font:8px ui-monospace;fill:#37474f}
+svg .dpin{font:700 5.6px ui-monospace;fill:#5b3fa8;pointer-events:none}
 svg .pref{font:700 11px ui-sans-serif;fill:#2b3a4a}
 svg .pv{font:8.5px ui-monospace}
 svg .pol{font:700 11px ui-monospace}
@@ -860,9 +861,12 @@ body.hide-label svg .pin{display:none}
 <g class="lyr-level">
 <g class="lvl" data-level="0">
 <polyline points="310.5,602.5 310.5,617.5 310.5,632.5" fill="none" stroke="#5b3fa8" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"><title>Q1 mosfet 2N7000</title></polyline>
-<circle cx="310.5" cy="602.5" r="2.4" fill="#fff" stroke="#5b3fa8" stroke-width="1.4"><title>Q1.G</title></circle>
-<circle cx="310.5" cy="617.5" r="2.4" fill="#fff" stroke="#5b3fa8" stroke-width="1.4"><title>Q1.D</title></circle>
-<circle cx="310.5" cy="632.5" r="2.4" fill="#fff" stroke="#5b3fa8" stroke-width="1.4"><title>Q1.S</title></circle>
+<circle cx="310.5" cy="602.5" r="4.6" fill="#fff" stroke="#5b3fa8" stroke-width="1.4"><title>Q1.G</title></circle>
+<text x="310.5" y="604.6" class="dpin lyr-label" text-anchor="middle">G<title>Q1.G</title></text>
+<circle cx="310.5" cy="617.5" r="4.6" fill="#fff" stroke="#5b3fa8" stroke-width="1.4"><title>Q1.D</title></circle>
+<text x="310.5" y="619.6" class="dpin lyr-label" text-anchor="middle">D<title>Q1.D</title></text>
+<circle cx="310.5" cy="632.5" r="4.6" fill="#fff" stroke="#5b3fa8" stroke-width="1.4"><title>Q1.S</title></circle>
+<text x="310.5" y="634.6" class="dpin lyr-label" text-anchor="middle">S<title>Q1.S</title></text>
 </g>
 <g class="lvl" data-level="1">
 <line x1="310.5" y1="512.5" x2="315.5" y2="507.5" stroke="#0d7a6f" stroke-width="1.6" stroke-opacity="0.75"/>
@@ -1283,7 +1287,7 @@ body.hide-label svg .pin{display:none}
 <g class="wire lyr-passive lyr-label" data-w="p:demo-left:R1" data-pk="resistor"><rect x="298.0" y="206.0" width="37.2" height="13" rx="3" fill="#fff" stroke="#a67c2e"/><text x="316.6" y="216.0" class="pv" text-anchor="middle" fill="#a67c2e">R1 10k</text></g>
 <g class="wire lyr-passive lyr-label" data-w="p:demo-left:C1" data-pk="ceramic"><rect x="298.0" y="225.0" width="42.4" height="13" rx="3" fill="#fff" stroke="#c46210"/><text x="319.2" y="235.0" class="pv" text-anchor="middle" fill="#c46210">C1 100n</text></g>
 <g class="wire lyr-passive lyr-label" data-w="p:demo-left:C2" data-pk="electrolytic"><rect x="422.0" y="81.0" width="58.0" height="13" rx="3" fill="#fff" stroke="#2e6da4"/><text x="451.0" y="91.0" class="pv" text-anchor="middle" fill="#2e6da4">C2 47u 25V</text></g>
-<g class="lyr-level lyr-label"><rect x="298.0" y="603.0" width="52.800000000000004" height="13" rx="3" fill="#fff" stroke="#5b3fa8"/><text x="324.4" y="613.0" class="pv" text-anchor="middle" fill="#5b3fa8">Q1 2N7000</text></g>
+<g class="lyr-level lyr-label"><rect x="321.5" y="596.0" width="52.800000000000004" height="13" rx="3" fill="#fff" stroke="#5b3fa8"/><text x="347.9" y="606.0" class="pv" text-anchor="middle" fill="#5b3fa8">Q1 2N7000</text></g>
 <g class="lyr-level lyr-label"><rect x="298.0" y="524.0" width="42.4" height="13" rx="3" fill="#fff" stroke="#b3452b"/><text x="319.2" y="534.0" class="pv" text-anchor="middle" fill="#b3452b">LK1 1x5</text></g>
 <text x="232.0" y="815.5" class="lead lyr-label halo" text-anchor="end">50a · 12V input</text>
 <text x="287.5" y="80.5" class="rn halo" text-anchor="middle">1</text>

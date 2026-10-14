@@ -365,16 +365,40 @@ def _level_layer(add, px, island, badges, writable):
                 f'stroke-linejoin="round" stroke-linecap="round">'
                 f'<title>{esc(dv.ref)} {esc(dv.kind)} '
                 f'{esc(dv.value)}</title></polyline>')
+            # Each leg carries its pin name (D/G/S, C/B/E, IN/GND/OUT):
+            # three identical dots left the builder guessing which leg
+            # of a TO-92 went in which hole. Names longer than three
+            # characters are cut to three; the hover title has the rest.
             for t, p in zip(dv.terminals, lifted):
-                add(f'<circle cx="{p[0]}" cy="{p[1]}" r="2.4" '
+                short = str(t.name)[:3]
+                r = 4.6 if len(short) == 1 else 6.4
+                add(f'<circle cx="{p[0]}" cy="{p[1]}" r="{r}" '
                     f'fill="#fff" stroke="{DEVICE_COL}" '
                     f'stroke-width="1.4"><title>{esc(dv.ref)}.'
                     f'{esc(t.name)}</title></circle>')
+                add(f'<text x="{p[0]}" y="{p[1] + 2.1}" class="dpin '
+                    f'lyr-label" text-anchor="middle">{esc(short)}'
+                    f'<title>{esc(dv.ref)}.{esc(t.name)}</title></text>')
             mid = lifted[len(lifted) // 2]
             lab = _stack_label(dv.ref, dv.value)
             hw = len(lab) * 2.6 + 5
-            mx = _badge_x(writable, mid[0], hw)
-            my = _badge_y(badges, mx, mid[1] - 8, hw, 8)
+            # Above the legs first; on a crowded cell, beside them
+            # (right, then left), then below. Only if every spot is
+            # taken does it fall back to the plain vertical nudge.
+            xs = [p[0] for p in lifted]
+            cands = [(mid[0], mid[1] - 8)]
+            cands += [(max(xs) + hw + 9, p[1]) for p in lifted]
+            cands += [(min(xs) - hw - 9, p[1]) for p in lifted]
+            cands += [(mid[0], max(p[1] for p in lifted) + 14)]
+            for cx, cy in cands:
+                mx = _badge_x(writable, cx, hw)
+                if not _badge_hits(badges, mx, cy, hw, 8):
+                    my = cy
+                    badges.append((mx, my, hw, 8))
+                    break
+            else:
+                mx = _badge_x(writable, mid[0], hw)
+                my = _badge_y(badges, mx, mid[1] - 8, hw, 8)
             deferred.append(
                 f'<g class="lyr-level lyr-label">'
                 f'{_badge_svg(mx, my, lab, DEVICE_COL)}</g>')
@@ -399,6 +423,27 @@ def _badge_y(badges, mx, my, hw, hh):
             return cand
     badges.append((mx, my, hw, hh))
     return my
+
+
+def _device_leg_plates(px, island):
+    """(x, y, half-w, half-h) of every lettered device leg, so value
+    badges placed BEFORE the device layer already steer clear of them."""
+    out = []
+    for dv in getattr(island, "devices", ()):
+        for t in dv.terminals:
+            p = _endpoint_px(px, t.addr)
+            if p is None:
+                continue
+            p = _lift(p, dv.level)
+            r = 4.6 if len(str(t.name)[:3]) == 1 else 6.4
+            out.append((p[0], p[1], r + 1, r + 1))
+    return out
+
+
+def _badge_hits(badges, mx, my, hw, hh):
+    """True if a badge plate at (mx, my) would overlap one already placed."""
+    return any(abs(mx - bx) < hw + bw and abs(my - by) < hh + bh
+               for (bx, by, bw, bh) in badges)
 
 
 def _badge_x(writable, mx, hw):
@@ -1116,7 +1161,9 @@ def island_body(island, wires, stats, lattice, skip_links=(),
     _column_letters(add, px, lattice)
     # one badge-collision list for the whole island: passives and the
     # level stack label the same board and must not stack on each other
-    badges = []
+    # lettered device legs are labels too: registered first, so no
+    # value badge (a device's own name plate included) lands on one
+    badges = _device_leg_plates(px, island)
     nx_l, nx_r = _number_strip_x(px, lattice)
     writable = (nx_l + NUM_W / 2 + 2, nx_r - NUM_W / 2 - 2)
     labels = _parts(add, px, island)
@@ -1441,6 +1488,7 @@ svg .cn{font:bold 9.5px ui-monospace;fill:#3f3a31}
 svg .rail{font:700 9px ui-monospace}
 svg .part{fill:#2b3a4a;fill-opacity:.08;stroke:#2b3a4a;stroke-opacity:.55}
 svg .pin{font:8px ui-monospace;fill:#37474f}
+svg .dpin{font:700 5.6px ui-monospace;fill:#5b3fa8;pointer-events:none}
 svg .pref{font:700 11px ui-sans-serif;fill:#2b3a4a}
 svg .pv{font:8.5px ui-monospace}
 svg .pol{font:700 11px ui-monospace}
