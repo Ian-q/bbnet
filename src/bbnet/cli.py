@@ -243,9 +243,11 @@ def layout_html(data_dir):
     (the derived Design + rules make routing net/domain-aware)."""
     _parts, colours, rules, islands, pm, panels = load_data(data_dir)
     design = model.derive(islands, pm)
-    title = (_yaml(data_dir / "layout.yaml") or {}).get("title")
+    layout = _yaml(data_dir / "layout.yaml") or {}
+    rails = model.rails_from(layout, set(islands))
     return render.render_html(islands, design, rules, panels,
-                              colours=colours, title=title)
+                              colours=colours, title=layout.get("title"),
+                              rails=rails)
 
 
 def cmd_render(data_dir, out=None):

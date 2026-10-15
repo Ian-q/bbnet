@@ -151,9 +151,12 @@ def test_dual_pane_shell():
     # fixed dock on the far right (not a bar above the boards)
     html = bbnet.layout_html(FIXTURES)
     n = _sections()
+    # plus one assembly section per layout.yaml rail, which shares the
+    # board|kitting shell (stacked) but is not an island sheet
+    rails = html.count('class="island stacked assembly"')
     assert html.count('<section class="island">') == n
-    assert html.count('<div class="board">') == n
-    assert html.count('<div class="kit">') == n
+    assert html.count('<div class="board">') == n + rails
+    assert html.count('<div class="kit">') == n + rails
     assert ".island{display:grid" in html
     assert ".layers{position:fixed" in html
     assert 'class="help"' in html                  # legend text collapses

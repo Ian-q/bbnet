@@ -521,6 +521,65 @@ class Panel:
             else "L"
 
 
+# ---------------------------------------------------------------- rails
+
+DEFAULT_RAIL_GAP_PX = 36    # drawn space between two carriers on a rail
+
+
+@dataclass
+class Rail:
+    """One DIN rail (or any row of carriers), islands left-to-right as
+    mounted. Each board sits on it rotated 90 degrees counter-clockwise
+    from the upright build sheet: row 1 at the left, column a at the
+    bottom. A rail renders as the ASSEMBLY view - the boards as they
+    sit in the box, with the wires between them run down (or up) into a
+    channel, along it, and back into the far board."""
+    name: str
+    islands: list[str]
+    gap: int = DEFAULT_RAIL_GAP_PX
+    note: str = ""
+
+
+def rails_from(d, island_names):
+    """layout.yaml `rails:` -> [Rail]. Optional: a project with no rails
+    simply gets no assembly view. An island may sit on at most one rail;
+    an island on no rail is left out of the assembly view, nothing
+    else."""
+    rails, home = [], {}
+    for i, r in enumerate((d or {}).get("rails") or []):
+        if not isinstance(r, dict):
+            raise ModelError(f"layout.yaml rail #{i + 1}: must be a "
+                             "mapping with name:/islands:")
+        name = str(r.get("name") or "").strip()
+        if not name:
+            raise ModelError(f"layout.yaml rail #{i + 1}: missing 'name:'")
+        if any(q.name == name for q in rails):
+            raise ModelError(f"layout.yaml: duplicate rail name {name!r}")
+        members = [str(x) for x in (r.get("islands") or [])]
+        if not members:
+            raise ModelError(f"layout.yaml rail {name!r}: no islands")
+        if len(set(members)) != len(members):
+            raise ModelError(f"layout.yaml rail {name!r}: island listed "
+                             "twice")
+        for m in members:
+            if m not in island_names:
+                raise ModelError(f"layout.yaml rail {name!r}: unknown "
+                                 f"island {m!r} (have "
+                                 f"{sorted(island_names)})")
+            if m in home:
+                raise ModelError(
+                    f"layout.yaml: island {m!r} is on two rails "
+                    f"({home[m]!r} and {name!r}) - a board sits in one "
+                    "place")
+            home[m] = name
+        gap = r.get("gap", DEFAULT_RAIL_GAP_PX)
+        if isinstance(gap, bool) or not isinstance(gap, int) or gap < 0:
+            raise ModelError(f"layout.yaml rail {name!r}: gap must be a "
+                             f"non-negative integer (px), got {gap!r}")
+        rails.append(Rail(name, members, gap, str(r.get("note", ""))))
+    return rails
+
+
 def panels_from(d, island_names):
     """layout.yaml -> [Panel]. Islands named by no panel render alone."""
     panels, home = [], {}

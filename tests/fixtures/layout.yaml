@@ -5,3 +5,8 @@ panels:
     note: fixture panel — exercises seam stitching and cross-board kitting
 
 title: Demo pair — bbnet fixture build sheet
+
+rails:
+  - name: Demo rail
+    islands: [demo-left, demo-right]
+    note: fixture rail - exercises the rotated assembly view

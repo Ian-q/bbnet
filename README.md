@@ -114,7 +114,16 @@ version the test suite itself uses.
   cap-polarity and voltage-rating checks (B10/B11).
 - **`layout.yaml`** — panels: boards that sit side by side on the bench
   and render as one stitched build sheet, with cross-board interlinks
-  drawn once across the seam rather than twice as ghost stubs.
+  drawn once across the seam rather than twice as ghost stubs. Optional
+  **`rails:`** (`name`, `islands` left to right, `gap` px, `note`) adds
+  an **assembly view** at the top of the sheet: each board turned 90°
+  counter-clockwise the way a DIN-rail carrier holds it (row 1 left,
+  column a down), side by side in mounting order, with every wire
+  between two rail-mates drawn out over the board's long edge, along a
+  channel above or below the rail, and back in. Wires to a board on no
+  rail or another rail end in a labelled dashed stub. Each board's name
+  links to its upright sheet, which stays the view a board is built
+  from. Routing is unchanged by `rails:` - it only draws.
 
 ### Addressing
 
