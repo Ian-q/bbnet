@@ -238,6 +238,27 @@ def dip_right_col(part):
     return DIP_MIRROR.get(part.anchor.hole)
 
 
+def pin_hole(part, addr):
+    """Hole letter a placed part's pin really occupies, or None when it
+    cannot be known (no footprint, or pin1 written as a bare half-row).
+
+    Footprint pins are landed as half-row NODES (`land`), which is all
+    the netlist needs - but the leg still sits in one physical hole, and
+    a wire end pushed into that same hole is a real collision. A dip
+    keeps its left row in pin1's column and its right row at
+    `dip_right_col`; a single-column part keeps every pin in pin1's
+    column, on pin1's half only."""
+    if getattr(addr, "hole", None):
+        return addr.hole
+    if part.fp is None or part.anchor is None or part.anchor.hole is None:
+        return None
+    if part.fp.kind == "dip":
+        return dip_right_col(part) if addr.half == "R" else part.anchor.hole
+    if addr.half == part.anchor.half:
+        return part.anchor.hole
+    return None
+
+
 def land(fp, pin1):
     """Pin name -> half-row landing, walking the footprint from pin 1."""
     pins = {}
@@ -1072,6 +1093,11 @@ def derive(islands, signals):
                 # failure this registry exists to prevent.
                 signal_map(source)
             for pn, addr in part.pins.items():
+                # register the leg's own hole, so B1 catches a wire end
+                # (or another leg) pushed into it
+                hole = pin_hole(part, addr)
+                if hole and not addr.hole:
+                    addr = HoleAddr(addr.island, addr.row, addr.half, hole)
                 key = touch(addr, f"{part.ref}.{pn}")
                 pin_key[(part.ref, pn)] = key
                 if pn in part.seeds:
