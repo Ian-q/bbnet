@@ -60,6 +60,12 @@ a bug to route around).
    exists to catch, and an out-of-sync build sheet sends you to the bench
    with wrong instructions.
 
+When the layout is electrically right but awkward to build (wires
+zig-zagging through carrier gaps, flying over a whole board, a chip
+that wants turning round), run the **`bbnet-layout-review`** skill -
+ideally as a separate agent. It proposes re-layouts that `bbnet score`
+proves keep the circuit, as a diff for the operator to approve.
+
 `bbnet bom` rolls up parts and passives per island, including any unmet
 requirements, for a shopping/kitting list — it takes `--pinmap` too, on
 the same condition as the rest of the loop.

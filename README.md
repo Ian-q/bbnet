@@ -71,8 +71,9 @@ source is a different, harder failure than an empty one.
 `bbnet report` and `bbnet render` regenerate `REPORT.md` and
 `LAYOUT.html` the same way; `bbnet todo` prints unmet `rules.yaml`
 requirements (`no unmet requirements — nothing to place` for this
-fixture); `bbnet bom` rolls up parts and passives per island. All five
-subcommands accept `--pinmap`.
+fixture); `bbnet bom` rolls up parts and passives per island; `bbnet
+score` measures how tidy the layout is (see [Scoring a
+layout](#scoring-a-layout)). Every subcommand accepts `--pinmap`.
 
 Drop `--pinmap` from that same command and it raises instead:
 
@@ -123,7 +124,29 @@ version the test suite itself uses.
   channel above or below the rail, and back in. Wires to a board on no
   rail or another rail end in a labelled dashed stub. Each board's name
   links to its upright sheet, which stays the view a board is built
-  from. Routing is unchanged by `rails:` - it only draws.
+  from. A rail's optional **`channel: below|above`** is the side its
+  wiring duct runs on, and it DRIVES routing: every interlink half on
+  that rail's boards leaves by that long edge (below = column a, above =
+  column j), overriding the panel's facing edges, so no wire threads
+  the gap between two carriers. A panel then draws whole only the wires
+  whose halves still face each other; the rest keep labelled stubs.
+  Without `channel:`, rails only draw.
+- **`frozen: <reason>`** on an island marks a board that must not be
+  re-laid-out (typically: already built). Advisory: `bbnet score` lists
+  it and the layout review leaves it alone.
+
+### Scoring a layout
+
+`bbnet score [--json]` prints a **fingerprint** of the circuit with
+every position stripped out (which pins, leads and seeded nets share a
+net; a non-polar passive's ends are interchangeable) and the metrics
+that make a sheet hard to build, in rank order: DRC errors, routing
+failures, gap crossings on a rail, underside runs, DRC warnings,
+in-node detours, `fly_cols` (how far off-board wires fly over their own
+board to an edge), wire count, cut length. A re-layout that keeps the
+fingerprint is the same circuit; one that lowers the rank is tidier.
+The [`bbnet-layout-review`](skills/bbnet-layout-review/SKILL.md) skill
+is built on exactly that.
 
 ### Addressing
 
@@ -367,7 +390,9 @@ DRC-clean design exercising placements, rails, jumpers, passives of
 three kinds, an off-board lead, a cross-board interlink, and a panel.
 
 A companion Claude Code skill for the authoring loop lives at
-[`skills/bbnet/SKILL.md`](skills/bbnet/SKILL.md).
+[`skills/bbnet/SKILL.md`](skills/bbnet/SKILL.md), and one for tidying a
+finished layout without changing its circuit at
+[`skills/bbnet-layout-review/SKILL.md`](skills/bbnet-layout-review/SKILL.md).
 
 ## Licence
 

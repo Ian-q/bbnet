@@ -1196,14 +1196,28 @@ def seam_links(panel, routed):
     """Cross-island wires the panel can draw whole: {link: (a, b)} where
     each half is (island, wire). A link qualifies only when BOTH halves
     were routed and both islands sit in this panel — an interlink to a
-    board outside the panel keeps its ghost-bus stub."""
+    board outside the panel keeps its ghost-bus stub.
+
+    Both halves must also leave by the edges that FACE each other. A
+    rail `channel:` sends every half out one long edge, so on a channel
+    rail a panel-mate's wire usually leaves away from the seam; it is
+    run in the assembly view's channel, and here it keeps its labelled
+    stub at each end rather than being drawn back across a board."""
     halves = {}
     for name in panel.islands:
         for w in routed[name][0]:
             if w.link and w.path:
                 halves.setdefault(w.link, {})[w.link_end] = (name, w)
+
+    def faces(name, wire, other):
+        side = ("L" if wire.path[-1].x <= routed[name][2].x_of("edgeL")
+                else "R")
+        return side == panel.side_of(name, other)
+
     return {k: (v["a"], v["b"]) for k, v in sorted(halves.items())
-            if "a" in v and "b" in v}
+            if "a" in v and "b" in v
+            and faces(v["a"][0], v["a"][1], v["b"][0])
+            and faces(v["b"][0], v["b"][1], v["a"][0])}
 
 
 def seam_stack(links):
@@ -1470,9 +1484,13 @@ def render_rail(rail, islands, routed, rail_tints):
             plan[k] = (sa, sb, gx)
     lane_top, n_top = _asm_pack(spans["top"])
     lane_bot, n_bot = _asm_pack(spans["bot"])
-    stub_len = 96 if stubs else 0
-    top_band = ASM_CLEAR + max(n_top, 1) * ASM_LANE + stub_len
-    bot_band = ASM_CLEAR + max(n_bot, 1) * ASM_LANE + stub_len
+    # each side reserves stub room only for the stubs that leave by it,
+    # so a channel rail carries no empty band on its quiet side
+    stub_sides = {_asm_exit_side(w, boards[i]["lat"]) for i, w in stubs}
+    top_band = (ASM_CLEAR + max(n_top, 1) * ASM_LANE
+                + (96 if "top" in stub_sides else 0))
+    bot_band = (ASM_CLEAR + max(n_bot, 1) * ASM_LANE
+                + (96 if "bot" in stub_sides else 0))
     mid = ASM_NAME_H + top_band + tallest / 2     # the rail's centreline
 
     def place(i, wire):
@@ -2028,7 +2046,7 @@ def render_html(islands, design=None, rules=None, panels=(), colours=None,
     rail_tints = dict(DEFAULT_RAIL_TINTS,
                       **((colours or {}).get("rail_tints") or {}))
     heading = title or "Breadboard layout — routed build sheet"
-    routed = route_design(islands, design, rules, panels)
+    routed = route_design(islands, design, rules, panels, rails)
     legend = "".join(
         f'<span><i style="background:{WIRE_COLOURS[c]}"></i>{c}</span>'
         for c in ("RED", "BLK", "YEL", "BLU", "GRN", "WHT", "ORG", "PUR",

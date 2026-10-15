@@ -179,7 +179,7 @@ def _local(addr):
 
 class _IslandRouter:
     def __init__(self, island: Island, remote_stubs, net_ctx=None,
-                 pair_side=None):
+                 pair_side=None, rail_side=None):
         self.isl = island
         self.lat = Lattice(island)
         # net context (from the derived Design): endpoint -> nid,
@@ -187,6 +187,9 @@ class _IslandRouter:
         self.net_ctx = net_ctx or _NetCtx()
         # panel-mate island -> "L"/"R": which edge that board sits past
         self.pair_side = pair_side or {}
+        # the island's rail channel ("L"/"R"), which beats pair_side for
+        # every interlink half on this board; None = no channel rail
+        self.rail_side = rail_side
         self._build_occupancy()
         self.wires = self._collect_wires(remote_stubs)
         self.landings = self._scan_landings(remote_stubs)
@@ -522,7 +525,7 @@ class _IslandRouter:
             a, _ah = self._terminal(j.a)
             if not a or not isinstance(j.b, XIsland):
                 continue
-            side = self.pair_side.get(j.b.island)
+            side = self.rail_side or self.pair_side.get(j.b.island)
             link = f"{self.isl.name}#{idx}"
             label = f"{_local(j.a)} ⇒ {j.b}"
             if getattr(j, "underside", False):
@@ -541,7 +544,7 @@ class _IslandRouter:
             a, _ah = self._terminal(ep)
             if not a:
                 continue
-            side = self.pair_side.get(origin)
+            side = self.rail_side or self.pair_side.get(origin)
             label = f"{_local(ep)} ⇐ {origin}"
             if under:
                 ex = self.lat.x_of("edgeR" if side != "L" else "edgeL")
@@ -899,7 +902,8 @@ class _NetCtx:
         return self._dom_cache[nid]
 
 
-def route_design(islands: dict, design=None, rules=None, panels=()):
+def route_design(islands: dict, design=None, rules=None, panels=(),
+                 rails=()):
     """Route every island; returns {name: (wires, stats, lattice)}.
 
     With a derived Design (and optional rules with a `domains:` list),
@@ -907,7 +911,9 @@ def route_design(islands: dict, design=None, rules=None, panels=()):
     pairs and wires whose nets match different `domains:` classes keep
     out of each other's shadow. `panels` (layout.yaml) fixes the exit
     edge for islands that sit side by side, so the two halves of a
-    cross-board wire run toward each other and meet at the seam."""
+    cross-board wire run toward each other and meet at the seam.
+    `rails` with a `channel:` override that: every interlink half on
+    one of their boards leaves by the channel's edge."""
     ctx = _NetCtx(design, rules)
     sides = defaultdict(dict)
     for p in panels or ():
@@ -915,6 +921,8 @@ def route_design(islands: dict, design=None, rules=None, panels=()):
             for other in p.islands:
                 if other != mine:
                     sides[mine][other] = p.side_of(mine, other)
+    rail_side = {m: r.exit_side for r in rails or () if r.exit_side
+                 for m in r.islands}
     stubs = defaultdict(list)
     for isl in islands.values():
         for idx, j in enumerate(isl.interlinks):
@@ -931,7 +939,7 @@ def route_design(islands: dict, design=None, rules=None, panels=()):
         r = _IslandRouter(islands[name], sorted(
             stubs.get(name, []),
             key=lambda t: (t[0], t[1], t[2], t[3] or "")), ctx,
-            sides.get(name))
+            sides.get(name), rail_side.get(name))
         out[name] = r.route()
     return out
 
