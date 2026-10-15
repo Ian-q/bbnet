@@ -101,7 +101,10 @@ def test_pwr_pad_says_nothing_about_sameness_when_a_strip_is_undeclared(fx):
     reaches "one net" via `len({declared nets}) == 1` gets this wrong,
     because that is also true when only one strip was ever declared."""
     html = cli.layout_html(fx)
-    demo_right = html[html.find(">demo-right"):]
+    # the upright sheets, not the assembly view above them (which draws
+    # the same boards turned, demo-left included)
+    sheets = html[html.find('<section class="island">'):]
+    demo_right = sheets[sheets.find(">demo-right"):]
     assert "one net" not in demo_right
     assert "NEVER bridge" not in demo_right
 
