@@ -38,20 +38,29 @@ make them better.
    problems; the picture finds the rest (labels colliding, a wire
    parallel to a part leg for its whole length, a bundle that crosses
    itself).
-4. **Skip frozen islands.** An island with `frozen: <reason>` (shown
+4. **Read every island's header comment before moving anything on it.**
+   bbnet does not model every body: a module lying flat beside its
+   header, a buck standing on a right-angle header, a Click's overhang.
+   The header says which holes they bury ("nothing lands in a-d under
+   the INA226"); the DRC cannot tell you.
+5. **Skip frozen islands.** An island with `frozen: <reason>` (shown
    in the score table) is built, or deliberately fixed. Do not move
    anything on it; you may still change the OTHER end of a wire that
    lands on it.
-5. **Propose one move at a time** from the vocabulary below. After each:
+6. **Propose one move at a time** from the vocabulary below. After each:
    `bbnet score --json` on the copy. **Keep the move only if** the
    fingerprint is unchanged, `errors` is still 0, `warnings` did not
    rise, and `rank` is lexicographically lower (or equal, with a reason
    a builder would accept, e.g. "every output now reads top to bottom
    in bit order"). Otherwise undo it. Never batch untested moves.
-6. **Stop** when no move in the vocabulary improves anything, or after
+   A one-column nudge that leaves a wire flying over the same part is
+   not a win, even if `fly_cols` drops: keep moves that change what the
+   builder sees (a wire that no longer crosses a body, a gap crossing
+   gone, a bundle that stops crossing itself).
+7. **Stop** when no move in the vocabulary improves anything, or after
    the moves that matter most - a short list of real wins beats twenty
    one-cell nudges.
-7. **Report** (below). Do not commit, do not copy files back.
+8. **Report** (below). Do not commit, do not copy files back.
 
 ## Move vocabulary
 
@@ -60,21 +69,26 @@ Cheapest and safest first.
 - **Re-hole a wire end within its node.** The five holes of a half-row
   are one node: moving an end to another free hole in the same half-row
   never changes the circuit. Use it to point an off-board wire's end at
-  the channel edge (column a for `channel: below`, j for `above`), or to
-  stop a wire walking along its own row (`in_node_runs`).
+  the channel edge (`channel: below` is the column-a edge, `edgeL` in
+  the lattice; `above` is the column-j edge, `edgeR`), or to stop a wire
+  walking along its own row (`in_node_runs`). The hole must be free:
+  not a part's leg, not under a body the header names. A wire's far end
+  is written in the file of the island that DECLARES the wire
+  (`to: "other-island:12g"`), not the island it lands on.
 - **Turn a two-terminal part end for end** (swap `from:`/`to:`), or
   move it to free holes of the same two nodes. Non-polar only - the
   fingerprint refuses a flipped diode or electrolytic, as it should.
 - **Move a part's net to another free row**: relocate the part AND every
   wire end and passive end on its rows by the same offset. Mechanical
   but error-prone; the fingerprint is the check.
-- **Turn a chip or module 180 degrees.** For a `dip`, pin 1 moves to the
-  diagonally opposite corner; for a `sil`, to the other end of the
-  strip; for a 3-leg device (`pins: {E:, B:, C:}`), swap the outer legs'
-  rows (a TO-92 then faces the other way - say so in its `value:`, e.g.
-  "flat face away"). Then remap every endpoint on the old pin rows to
-  the new ones. Worth it when most of the part's wiring leaves from the
-  far side.
+- **Turn a single-row part or a device 180 degrees.** For a `sil`,
+  pin 1 moves to the other end of the strip; for a 3-leg device
+  (`pins: {E:, B:, C:}`), swap the outer legs' rows (a TO-92 then faces
+  the other way - say so in its `value:`, e.g. "flat face away"). Then
+  remap every endpoint on the old pin rows to the new ones. Worth it
+  when most of the part's wiring leaves from the far side. A `dip`
+  cannot be turned yet: bbnet requires its pin 1 on the left half.
+  Recommend it with the estimated saving instead.
 - **Move a part to the other half** of the board (across the ravine), or
   a whole sub-circuit along the rows, when its wiring all leaves one way.
 - **Layout-level (`layout.yaml`), propose only - never apply silently:**

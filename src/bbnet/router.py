@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from bbnet.geometry import (
     HoleAddr, LEFT_HOLES, RIGHT_HOLES, RailAddr, parse_local,
 )
-from bbnet.model import Island, PinRef, XIsland, dip_right_col
+from bbnet.model import Island, PinRef, XIsland, dip_right_col, pin_hole
 
 TOP, BOT = 0, 1
 
@@ -287,17 +287,10 @@ class _IslandRouter:
         footprint to infer from). A dip/click straddles the ravine with
         its two pin rows at the anchor column and `dip_right_col`;
         anything else keeps every pin in the anchor column."""
-        if getattr(addr, "hole", None) or part.fp is None \
-                or part.anchor is None or part.anchor.hole is None:
+        if getattr(addr, "hole", None):
             return None
-        lat = self.lat
-        if part.fp.kind == "dip":
-            return lat.x_of(dip_right_col(part) if addr.half == "R"
-                            else part.anchor.hole)
-        # single-column part: the anchor speaks only for its own half
-        if addr.half == part.anchor.half:
-            return lat.x_of(part.anchor.hole)
-        return None
+        hole = pin_hole(part, addr)
+        return self.lat.x_of(hole) if hole else None
 
     def _body(self, part):
         """TOP-layer cells covered by a part body."""
