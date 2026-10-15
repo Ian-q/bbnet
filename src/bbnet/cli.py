@@ -130,7 +130,9 @@ def build(data_dir, route=True):
     routed = None
     if route:
         from bbnet import router
-        routed = router.route_design(islands, design, rules, panels)
+        rails = model.rails_from(_yaml(data_dir / "layout.yaml") or {},
+                                 set(islands))
+        routed = router.route_design(islands, design, rules, panels, rails)
     violations, todos = drc.run_all(design, rules, colours, routed)
     return design, violations, todos
 
@@ -257,6 +259,26 @@ def cmd_render(data_dir, out=None):
     return 0
 
 
+def cmd_score(data_dir, as_json=False):
+    """How tidy the layout is, and a fingerprint of the circuit that
+    survives any re-layout - the yardstick for skills/bbnet-layout-review.
+    Exit status follows DRC errors, like check."""
+    from bbnet import router, score
+    _parts, colours, rules, islands, pm, panels = load_data(data_dir)
+    design = model.derive(islands, pm)
+    rails = model.rails_from(_yaml(data_dir / "layout.yaml") or {},
+                             set(islands))
+    routed = router.route_design(islands, design, rules, panels, rails)
+    violations, _todos = drc.run_all(design, rules, colours, routed)
+    s = score.score(design, islands, routed, violations, rails)
+    if as_json:
+        import json
+        print(json.dumps(s, indent=1))
+    else:
+        print(score.format_text(s))
+    return 1 if s["totals"]["errors"] else 0
+
+
 def cmd_bom(data_dir):
     design, _violations, todos = build(data_dir, route=False)  # no geometry
     for iname in sorted(design.islands):
@@ -277,7 +299,8 @@ def cmd_bom(data_dir):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
-                        choices=["check", "report", "todo", "bom", "render"])
+                        choices=["check", "report", "todo", "bom", "render",
+                                 "score"])
     # DATA_DIR is a module global, read here -- inside main(), not at
     # import time -- so a host that sets cli.DATA_DIR before calling
     # main() is honoured.
@@ -292,6 +315,8 @@ def main(argv=None):
                              "'pinmap' signal source. Required only if "
                              "a footprint declares pin_signals: "
                              "pinmap:<mcu>")
+    parser.add_argument("--json", action="store_true",
+                        help="score only: machine-readable output")
     args = parser.parse_args(argv)
     # Registered before dispatch so it's live for every subcommand --
     # check/report/todo/bom/render all call load_data(), which hands
@@ -300,6 +325,8 @@ def main(argv=None):
         g_signals.register("pinmap", load_pinmap(args.pinmap))
     if args.command == "render":
         return cmd_render(args.data_dir, args.out)
+    if args.command == "score":
+        return cmd_score(args.data_dir, args.json)
     fn = {"check": cmd_check, "report": cmd_report,
           "todo": cmd_todo, "bom": cmd_bom}[args.command]
     return fn(args.data_dir)

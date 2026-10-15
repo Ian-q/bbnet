@@ -463,6 +463,11 @@ class Island:
     devices: list[Device] = field(default_factory=list)
     risers: list[Riser] = field(default_factory=list)
     links: list[Link] = field(default_factory=list)
+    # Why this board must not be re-laid-out (`frozen: <reason>` in its
+    # YAML), or "" when it may be. Advisory to people and to the layout
+    # reviewer (skills/bbnet-layout-review): typically a board already
+    # built, whose holes are now fact rather than proposal.
+    frozen: str = ""
 
     def sockets(self):
         """(row, half, hole) -> set of levels reachable there.
@@ -533,11 +538,24 @@ class Rail:
     from the upright build sheet: row 1 at the left, column a at the
     bottom. A rail renders as the ASSEMBLY view - the boards as they
     sit in the box, with the wires between them run down (or up) into a
-    channel, along it, and back into the far board."""
+    channel, along it, and back into the far board.
+
+    `channel` ('below' / 'above', or None) is the side of the rail the
+    wiring duct runs on. Set, it DRIVES routing: every interlink half on
+    a board of this rail leaves by that long edge (below = the column-a
+    edge, above = the column-j edge), whatever panel the board is drawn
+    in - so no wire zig-zags through the gap between two carriers.
+    Unset, each half keeps the panel-facing / nearest edge."""
     name: str
     islands: list[str]
     gap: int = DEFAULT_RAIL_GAP_PX
     note: str = ""
+    channel: str | None = None
+
+    @property
+    def exit_side(self):
+        """The upright edge ('L'/'R') the channel puts every half on."""
+        return {"below": "L", "above": "R"}.get(self.channel)
 
 
 def rails_from(d, island_names):
@@ -576,7 +594,12 @@ def rails_from(d, island_names):
         if isinstance(gap, bool) or not isinstance(gap, int) or gap < 0:
             raise ModelError(f"layout.yaml rail {name!r}: gap must be a "
                              f"non-negative integer (px), got {gap!r}")
-        rails.append(Rail(name, members, gap, str(r.get("note", ""))))
+        channel = r.get("channel")
+        if channel is not None and channel not in ("below", "above"):
+            raise ModelError(f"layout.yaml rail {name!r}: channel must be "
+                             f"'below' or 'above', got {channel!r}")
+        rails.append(Rail(name, members, gap, str(r.get("note", "")),
+                          channel))
     return rails
 
 
@@ -875,7 +898,21 @@ def island_from(d, parts_lib):
                   (bool(rb) if rb is not None else None),
                   parts, passives, jumpers, leads, inter,
                   [str(x) for x in (d.get("bench_only") or [])],
-                  sv, devices, risers, links)
+                  sv, devices, risers, links, _frozen(name, d))
+
+
+def _frozen(name, d):
+    """`frozen:` -> a reason string. `true` alone is allowed but says
+    nothing to whoever wants to move a part, so it reads as 'frozen'."""
+    v = d.get("frozen")
+    if v is None or v is False:
+        return ""
+    if v is True:
+        return "frozen"
+    if isinstance(v, str) and v.strip():
+        return v.strip()
+    raise ModelError(f"{name}: frozen must be true or a reason string, "
+                     f"got {v!r}")
 
 
 # -------------------------------------------------------------- derivation
