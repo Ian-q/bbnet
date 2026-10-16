@@ -218,7 +218,11 @@ passives:
 
 Kinds: `resistor`, `diode`, `led`, `inductor`, `ferrite`, `fuse`,
 `other`, plus the capacitors `ceramic` / `electrolytic` / `tantalum` /
-`film`. These land in `design.edges` and feed the geometry rules
+`film`. **Polarity convention: `from` is the + end.** For an
+electrolytic that is +; for a `diode` or `led` it is the ANODE, so `to`
+is the cathode - a diode's band, an LED's short leg. The build sheet
+draws the band (and a K) at the `to` end and the kitting table says
+`(A) → (K, band)`. These land in `design.edges` and feed the geometry rules
 (B8 span, B9 overlap, B10 polarity, B11 rating).
 
 A **radial** part (a can standing on its two legs) takes `dia:`, its
