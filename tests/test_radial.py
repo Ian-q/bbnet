@@ -123,3 +123,13 @@ def test_a_resistor_beside_a_transistor_is_fine():
     d = _left_design([{"ref": "R8", "kind": "resistor", "value": "10k",
                        "from": "36c", "to": "38c"}])
     assert not any("R8" in m for m in _msgs(d, drc.rule_passive_overlap))
+
+
+def test_a_resistor_across_a_single_row_part_is_an_error():
+    # demo-left J1 is a 4-pin sil header on 40a-43a: a resistor from the
+    # GND rail to 41c lies across its legs, exactly as one did across a
+    # TO-92 TL431 on a real build
+    d = _left_design([{"ref": "R6", "kind": "resistor", "value": "10k",
+                       "from": "rail:top-", "to": "41c"}])
+    assert any("R6 lies across J1's body" in m
+               for m in _msgs(d, drc.rule_passive_overlap))
