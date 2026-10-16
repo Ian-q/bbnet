@@ -49,7 +49,7 @@ import re
 from dataclasses import dataclass
 
 from bbnet.geometry import HOLE_TENTHS, HoleAddr, RailAddr
-from bbnet.model import CAP_KINDS, SWITCHED_SETS, ModelError
+from bbnet.model import CAP_KINDS, SWITCHED_SETS, ModelError, radial_cover
 
 
 @dataclass
@@ -529,6 +529,25 @@ def rule_passive_overlap(design, rules, colours):
                         f"each other on {where} — move one to another "
                         "level (or side: bottom) or re-hole it"))
             placed.append((q.ref, level, a, b))
+        # an axial body lying across a radial can's footprint: the can
+        # stands over those holes, so nothing can lie flat through them
+        cans = [(q, radial_cover(q)) for q in isl.passives if q.dia]
+        for can, cover in cans:
+            pts = [(HOLE_TENTHS[h], r) for r, _half, h in cover]
+            for q in isl.passives:
+                if q is can or getattr(q, "level", 0) != \
+                        getattr(can, "level", 0):
+                    continue
+                a = _passive_xy(q.a, q.b)
+                b = _passive_xy(q.b, q.a)
+                if a is None or b is None:
+                    continue
+                if any(_segs_touch(a, b, p, p) for p in pts):
+                    out.append(Violation(
+                        "passive-overlap", "error",
+                        f"{isl.name}: {q.ref} lies under {can.ref}'s body "
+                        f"(dia {can.dia:g} mm) - re-hole it clear of the "
+                        "can"))
     return out
 
 

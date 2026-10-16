@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 
 from bbnet.geometry import (
-    AddrError, BOARDS, Board, HoleAddr, RailAddr, col_at_span,
+    AddrError, BOARDS, Board, HOLE_TENTHS, HoleAddr, RailAddr, col_at_span,
     LEFT_HOLES, RIGHT_HOLES, parse_local,
 )
 
@@ -238,6 +238,34 @@ def dip_right_col(part):
     return DIP_MIRROR.get(part.anchor.hole)
 
 
+MM_PER_TENTH = 2.54
+
+
+def radial_cover(q):
+    """Holes buried under a radial part's body: [(row, half, hole)].
+
+    A radial can stands on its two legs with its body centred between
+    them, and it is fat - a 6.3 mm 100 uF can over legs at 3b/4b covers
+    3a, 4a, 3c and 4c, which nothing can then use. A hole counts as
+    covered when its centre lies inside the body's circle. The legs'
+    own holes are not listed (they hold the legs)."""
+    if not q.dia or not all(isinstance(e, HoleAddr) and e.hole
+                            for e in (q.a, q.b)):
+        return []
+    ax, bx = HOLE_TENTHS[q.a.hole], HOLE_TENTHS[q.b.hole]
+    cx, cy = (ax + bx) / 2, (q.a.row + q.b.row) / 2
+    r = q.dia / 2 / MM_PER_TENTH
+    legs = {(q.a.row, q.a.hole), (q.b.row, q.b.hole)}
+    out = []
+    for hole, hx in HOLE_TENTHS.items():
+        for row in range(int(cy - r) - 1, int(cy + r) + 2):
+            if row < 1 or (row, hole) in legs:
+                continue
+            if (hx - cx) ** 2 + (row - cy) ** 2 < r * r:
+                out.append((row, "L" if hole in "abcde" else "R", hole))
+    return sorted(out)
+
+
 def pin_hole(part, addr):
     """Hole letter a placed part's pin really occupies, or None when it
     cannot be known (no footprint, or pin1 written as a bare half-row).
@@ -328,6 +356,9 @@ class Passive:
                          # this (see level_of)
     # polarity convention: for electrolytics, `a` (YAML `from:`) is the
     # + terminal — rendered as +/- on the build sheet, enforced by B10
+    dia: float = 0.0     # body diameter in mm for a RADIAL part (a can
+                         # standing on its two legs); 0 = axial, the body
+                         # is the line between the legs. See radial_cover.
 
 
 @dataclass
@@ -788,10 +819,22 @@ def island_from(d, parts_lib):
             raise ModelError(f"{name}.{q.get('ref')}: kind {kind!r} not in "
                              f"{sorted(PASSIVE_KINDS)}")
         side, level = level_of(q, f"{name}.{q.get('ref')}")
+        pa, pb = ep(q["from"]), ep(q["to"])
+        dia = q.get("dia", 0)
+        if isinstance(dia, bool) or not isinstance(dia, (int, float)) \
+                or dia < 0:
+            raise ModelError(f"{name}.{q.get('ref')}: dia must be a body "
+                             f"diameter in mm, got {dia!r}")
+        if dia and not all(isinstance(e, HoleAddr) and e.hole
+                           for e in (pa, pb)):
+            raise ModelError(f"{name}.{q.get('ref')}: dia needs both legs "
+                             "in named holes (e.g. 3b, 4b) - the body "
+                             "is centred between them")
         passives.append(Passive(q.get("ref", "?"), kind,
                                 str(q.get("value", "")),
-                                ep(q["from"]), ep(q["to"]), name, side,
-                                str(q.get("rating", "")), level))
+                                pa, pb, name, side,
+                                str(q.get("rating", "")), level,
+                                float(dia)))
 
     devices = []
     for dv in d.get("devices") or []:
@@ -1156,6 +1199,14 @@ def derive(islands, signals):
             # to B8/B10/B11 as though it were.
             if isinstance(part, Passive) and len(by_index) == 2:
                 passive_recs.append((part, keys[0], keys[1]))
+                # a radial body buries the holes around its legs: file
+                # them so B1 refuses a leg or wire end pushed into one
+                # (top face only - an underside can covers nothing here)
+                if getattr(part, "level", 0) == 0:
+                    for row, half, hole in radial_cover(part):
+                        hole_members.setdefault(
+                            (isl.name, row, half, hole), []).append(
+                            f"{part.ref} body (dia {part.dia:g} mm)")
             else:
                 device_recs.append((part, terminals, keys))
 

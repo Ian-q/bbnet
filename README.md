@@ -221,6 +221,15 @@ Kinds: `resistor`, `diode`, `led`, `inductor`, `ferrite`, `fuse`,
 `film`. These land in `design.edges` and feed the geometry rules
 (B8 span, B9 overlap, B10 polarity, B11 rating).
 
+A **radial** part (a can standing on its two legs) takes `dia:`, its
+body diameter in mm: `{ref: C1, kind: electrolytic, value: 100u, from:
+4b, to: 3b, dia: 6.3}`. The body is centred between the legs, and every
+hole whose centre falls inside the circle is buried: a leg or wire end
+there is a B1 error, an axial part lying across it is a B9 error, the
+router treats it as a module body, and the build sheet draws the can.
+Without `dia:` a passive is axial - its body is the line between its
+legs, which for a fat can under-reports what it covers.
+
 **More than two — `devices:`,** addressed by a named `pins:` map:
 
 ```yaml

@@ -35,7 +35,8 @@ from dataclasses import dataclass, field
 from bbnet.geometry import (
     HoleAddr, LEFT_HOLES, RIGHT_HOLES, RailAddr, parse_local,
 )
-from bbnet.model import Island, PinRef, XIsland, dip_right_col, pin_hole
+from bbnet.model import (Island, PinRef, XIsland, dip_right_col, pin_hole,
+                         radial_cover)
 
 TOP, BOT = 0, 1
 
@@ -238,6 +239,12 @@ class _IslandRouter:
             occupy(q.a)
             occupy(q.b)
             self._claim_span(getattr(q, "level", 0), self._span(q.a, q.b))
+            # a radial can stands over its cover holes: a hard body, like
+            # a module's, at whatever level the can sits
+            if getattr(q, "level", 0) == 0:
+                self.body_cells |= {(lat.x_of(h), r)
+                                    for r, _half, h in radial_cover(q)
+                                    if r <= lat.rows}
         for dv in getattr(isl, "devices", ()):
             for t in dv.terminals:
                 occupy(t.addr)
