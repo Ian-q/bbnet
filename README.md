@@ -73,7 +73,7 @@ source is a different, harder failure than an empty one.
 requirements (`no unmet requirements — nothing to place` for this
 fixture); `bbnet bom` rolls up parts and passives per island; `bbnet
 score` measures how tidy the layout is (see [Scoring a
-layout](#scoring-a-layout)). Every subcommand accepts `--pinmap`.
+layout](#scoring-a-layout)); `bbnet serve` serves the build sheet locally so that labels can be dragged clear and saved (see [Moving labels](#moving-labels)). Every subcommand accepts `--pinmap`.
 
 Drop `--pinmap` from that same command and it raises instead:
 
@@ -362,6 +362,68 @@ which is why the model insists you write it down. A bar runs along a row
 or down a hole column, never diagonally and never across the ravine.
 Clipped positions still count toward the bar's length: snipping a pin
 doesn't shorten the PCB it was on.
+
+## Moving labels
+
+Label placement is automatic and greedy, and now and then a badge lands
+on the very thing you need to see. Any label can be dragged clear by
+hand, and the move is saved as data beside the island YAML.
+
+```
+bbnet serve --data-dir <dir> [--pinmap <csv>] [--port 8765]
+```
+
+This serves the build sheet on `http://127.0.0.1:8765/`, bound to
+loopback only. In the page:
+
+- **Double-click** a label to arm it. It glows and the cursor changes.
+- **Drag** it. This works at any zoom, and an armed label's drag never
+  pans the board.
+- **Click elsewhere or press Esc** to let it go.
+- **Alt+double-click** a label to put it back where the layout put it.
+- A panel in the bottom-left counts the pending moves:
+  - **Save** writes `labels.yaml`, re-renders `LAYOUT.html`, and reloads
+    the page.
+  - **Copy YAML** gives you the whole merged file to paste.
+  - **Discard** throws the pending moves away.
+- Pending moves survive a reload; they are kept in the browser's
+  localStorage until you save or discard them.
+
+Opened straight from disk (`file://`), the committed `LAYOUT.html` works
+the same way except that it has no Save. Use Copy YAML, paste the result
+over `labels.yaml`, then run `bbnet render`.
+
+`labels.yaml` is a reserved control file, never parsed as an island:
+
+```yaml
+# dragged label offsets, svg px in the upright sheet
+offsets:
+  "teensy-pwr/p/R_PD_T": [70, -35]
+  "teensy-pwr/w/1c": [0, 12]
+```
+
+Each offset becomes a `translate(dx,dy)` on that label's group, so its
+plate, text and halo move together. The file is an input to the build
+sheet like any other: `LAYOUT.html` is a pure function of the YAML,
+`labels.yaml` included. A hand-edit therefore needs a `bbnet render`,
+or `check` reports drift. If an offset's id no longer matches any label,
+for example after the part was renamed, `check` prints a `WARNING` line
+but still passes.
+
+Label ids are built to survive unrelated edits. They never use the
+router's wire keys, which renumber whenever a wire is added:
+
+| Id | Label |
+|---|---|
+| `<island>/p/<ref>` | a passive's value badge |
+| `<island>/d/<ref>` | a device's or link bar's badge |
+| `<island>/d/<ref>.<pin>` | a narrow part's outboard pin label |
+| `<island>/w/<endpoint>` | a wire's edge label, keyed by its on-board endpoint as written in the YAML (`1c`, `40R`, `rail:5V`) |
+
+When two labels would still share an id, for example two leads written
+as the same bare `rail:top+`, the second takes `#2`, then `#3`, and so
+on, in paint order. Row numbers and column letters are the sheet's
+coordinate system and cannot be moved.
 
 ## Configuration semantics
 

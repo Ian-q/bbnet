@@ -66,6 +66,17 @@ that wants turning round), run the **`bbnet-layout-review`** skill -
 ideally as a separate agent. It proposes re-layouts that `bbnet score`
 proves keep the circuit, as a diff for the operator to approve.
 
+**Moved labels.** `labels.yaml` in the data dir holds offsets for
+labels someone dragged clear by hand. It is user-authored data, so
+commit it together with the island YAML and never delete it as clutter.
+It feeds `LAYOUT.html`, which means a hand-edit to it needs a re-render.
+To move labels, run `bbnet serve --data-dir <dir> [--pinmap <csv>]` and
+open `http://127.0.0.1:8765/`. Double-click a label, drag it, then press
+Save; Save rewrites both `labels.yaml` and `LAYOUT.html`. When `check`
+prints a `WARNING` about a stale `labels.yaml` offset, the label it
+moved no longer exists. Drop that entry. The warning never fails the
+check. The id scheme is in the README, under *Moving labels*.
+
 `bbnet bom` rolls up parts and passives per island, including any unmet
 requirements, for a shopping/kitting list — it takes `--pinmap` too, on
 the same condition as the rest of the loop.

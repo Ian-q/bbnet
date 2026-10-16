@@ -11,6 +11,7 @@ Usage:
     bbnet todo      # unmet requirements = placement instructions
     bbnet bom       # component rollup
     bbnet render    # autorouted board views + kitting tables (LAYOUT.html)
+    bbnet serve     # the build sheet on 127.0.0.1, with label moves saved
 
 Add --pinmap PATH (a CSV, header exactly mcu,pin,signal) to any of the
 above when a footprint declares pin_signals: pinmap:<mcu> -- omit it
@@ -23,6 +24,7 @@ from __future__ import annotations
 import argparse
 import csv
 import difflib
+import json
 import sys
 from pathlib import Path
 
@@ -36,7 +38,8 @@ from bbnet.signals import SignalRegistry, SignalRow
 # to the working directory, which is the right default for a standalone
 # tool.
 DATA_DIR = None
-RESERVED = {"parts.yaml", "colours.yaml", "rules.yaml", "layout.yaml"}
+RESERVED = {"parts.yaml", "colours.yaml", "rules.yaml", "layout.yaml",
+            "labels.yaml"}
 
 
 # Host applications register their pin-allocation sources here before
@@ -211,6 +214,11 @@ def cmd_check(data_dir):
     if old_layout != new_layout:
         status = 1
         print(f"DRIFT: {layout} out of sync — run: bbnet render")
+    # a moved label whose id no longer renders is harmless but dead
+    # weight - say so, never fail on it
+    for lid in stale_label_offsets(load_label_offsets(data_dir), new_layout):
+        print(f"WARNING: labels.yaml offset {lid!r} matches no rendered "
+              "label (stale after an edit?) — drop it from labels.yaml")
     if status == 0:
         print("bbnet check OK: DRC has no errors, REPORT.md + "
               "LAYOUT.html in sync")
@@ -239,23 +247,216 @@ def cmd_todo(data_dir):
     return 0
 
 
+# ------------------------------------------------------------ labels.yaml
+#
+# Hand-dragged label offsets. User-authored data like the island YAML,
+# and an input to LAYOUT.html like it, so `check` stays a pure function
+# of the data dir. Written by `bbnet serve` (or pasted from a file://
+# sheet's "Copy YAML"); ids are documented in render.py's movable-labels
+# section.
+
+LABELS_HEADER = "# dragged label offsets, svg px in the upright sheet\n"
+
+
+def load_label_offsets(data_dir):
+    """labels.yaml -> {label id: (dx, dy)}. Missing or empty is {}."""
+    path = Path(data_dir) / "labels.yaml"
+    raw = _yaml(path).get("offsets") or {}
+    if not isinstance(raw, dict):
+        raise model.ModelError(f"{path}: offsets: must be a mapping of "
+                               "label id -> [dx, dy]")
+    out = {}
+    for lid, v in raw.items():
+        if (not isinstance(v, (list, tuple)) or len(v) != 2
+                or not all(isinstance(x, (int, float))
+                           and not isinstance(x, bool) for x in v)):
+            raise model.ModelError(f"{path}: offset {lid!r} must be "
+                                   f"[dx, dy] numbers, got {v!r}")
+        out[str(lid)] = (float(v[0]), float(v[1]))
+    return out
+
+
+def _fmt(v):
+    return f"{round(float(v), 1):g}"
+
+
+def dump_label_offsets(offsets):
+    """{id: (dx, dy)} -> labels.yaml text, sorted so diffs stay small."""
+    if not offsets:
+        return LABELS_HEADER + "offsets: {}\n"
+    lines = [LABELS_HEADER + "offsets:"]
+    for lid in sorted(offsets):
+        dx, dy = offsets[lid]
+        lines.append(f"  {json.dumps(lid)}: [{_fmt(dx)}, {_fmt(dy)}]")
+    return "\n".join(lines) + "\n"
+
+
+def merge_label_offsets(stored, offsets=None, reset=()):
+    """What a Save does to labels.yaml, as a pure function.
+
+    The page shows each label at its already-offset position, so a drag
+    is a DELTA: it adds to whatever is stored. `reset` drops a label's
+    stored offset first (so reset-then-drag stores just the new drag).
+    Offsets that come back to zero are dropped rather than kept as
+    [0, 0] noise."""
+    out = {k: (float(v[0]), float(v[1])) for k, v in (stored or {}).items()}
+    for lid in reset or ():
+        out.pop(str(lid), None)
+    for lid, d in (offsets or {}).items():
+        if (not isinstance(d, (list, tuple)) or len(d) != 2
+                or not all(isinstance(x, (int, float))
+                           and not isinstance(x, bool) for x in d)):
+            raise ValueError(f"offset {lid!r} must be [dx, dy] numbers")
+        bx, by = out.get(str(lid), (0.0, 0.0))
+        nx, ny = round(bx + d[0], 1), round(by + d[1], 1)
+        if nx or ny:
+            out[str(lid)] = (nx, ny)
+        else:
+            out.pop(str(lid), None)
+    return out
+
+
+def stale_label_offsets(offsets, page):
+    """Offset ids that match no rendered label - left behind when the
+    label they moved was renamed or removed."""
+    return sorted(set(offsets) - render.label_ids(page))
+
+
 def layout_html(data_dir):
     """The one true LAYOUT.html invocation — used by render, the check
-    sync-guard, and the tests, so they can never disagree on inputs
-    (the derived Design + rules make routing net/domain-aware)."""
+    sync-guard, serve, and the tests, so they can never disagree on
+    inputs (the derived Design + rules make routing net/domain-aware;
+    labels.yaml moves hand-placed labels)."""
     _parts, colours, rules, islands, pm, panels = load_data(data_dir)
     design = model.derive(islands, pm)
     layout = _yaml(data_dir / "layout.yaml") or {}
     rails = model.rails_from(layout, set(islands))
     return render.render_html(islands, design, rules, panels,
                               colours=colours, title=layout.get("title"),
-                              rails=rails)
+                              rails=rails,
+                              label_offsets=load_label_offsets(data_dir))
 
 
 def cmd_render(data_dir, out=None):
     out = Path(out) if out else data_dir / "LAYOUT.html"
     out.write_text(layout_html(data_dir), encoding="utf-8")
     print(f"wrote {out}")
+    return 0
+
+
+SERVE_MARKER = '<meta name="bbnet-serve" content="1">'
+
+
+def served_html(data_dir):
+    """LAYOUT.html as `serve` sends it: the file output plus one marker
+    the page script reads to offer Save. Only the served copy carries
+    it, so the committed file stays exactly what `render` writes."""
+    page = layout_html(data_dir)
+    head = '<meta charset="utf-8">'
+    return page.replace(head, head + "\n" + SERVE_MARKER, 1)
+
+
+def save_labels(data_dir, payload):
+    """POST /labels: merge a page's pending moves into labels.yaml, then
+    rewrite LAYOUT.html from it so the committed sheet stays in sync and
+    `check` passes. Returns the number of stored offsets.
+
+    If the re-render fails (say an island YAML is mid-edit), labels.yaml
+    is put back as it was rather than left ahead of LAYOUT.html."""
+    if not isinstance(payload, dict):
+        raise ValueError("body must be a JSON object")
+    offsets = payload.get("offsets") or {}
+    reset = payload.get("reset") or []
+    if not isinstance(offsets, dict) or not isinstance(reset, list):
+        raise ValueError("expected {offsets: {id: [dx, dy]}, reset: [ids]}")
+    path = Path(data_dir) / "labels.yaml"
+    merged = merge_label_offsets(load_label_offsets(data_dir), offsets,
+                                 reset)
+    old = path.read_text(encoding="utf-8") if path.exists() else None
+    path.write_text(dump_label_offsets(merged), encoding="utf-8")
+    try:
+        page = layout_html(data_dir)
+    except Exception:
+        if old is None:
+            path.unlink()
+        else:
+            path.write_text(old, encoding="utf-8")
+        raise
+    (Path(data_dir) / "LAYOUT.html").write_text(page, encoding="utf-8")
+    return len(merged)
+
+
+def make_server(data_dir, port=8765, host="127.0.0.1"):
+    """The `serve` HTTP server, unstarted (tests run it on port 0).
+
+    Loopback only: it writes files in the data dir on request, and has
+    no business being reachable from anywhere else."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    lock = threading.Lock()     # one render/write at a time
+
+    class Handler(BaseHTTPRequestHandler):
+        def _send(self, code, body, ctype):
+            data = body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _reply(self, code, obj):
+            self._send(code, json.dumps(obj), "application/json")
+
+        def do_GET(self):   # noqa: N802 - http.server's spelling
+            if self.path.split("?")[0] not in ("/", "/LAYOUT.html"):
+                self._send(404, "not found", "text/plain; charset=utf-8")
+                return
+            try:
+                with lock:
+                    page = served_html(data_dir)
+            except Exception as exc:   # show the YAML error, keep serving
+                self._send(500, f"bbnet: {exc}", "text/plain; charset=utf-8")
+                return
+            self._send(200, page, "text/html; charset=utf-8")
+
+        def do_POST(self):   # noqa: N802
+            if self.path.split("?")[0] != "/labels":
+                self._reply(404, {"ok": False, "error": "not found"})
+                return
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(n) or b"{}")
+                with lock:
+                    stored = save_labels(data_dir, payload)
+            except (ValueError, model.ModelError) as exc:
+                self._reply(400, {"ok": False, "error": str(exc)})
+                return
+            except Exception as exc:
+                self._reply(500, {"ok": False, "error": str(exc)})
+                return
+            print(f"saved labels.yaml ({stored} offset(s)) + LAYOUT.html")
+            self._reply(200, {"ok": True, "offsets": stored})
+
+        def log_message(self, fmt, *args):   # keep the terminal quiet
+            pass
+
+    return ThreadingHTTPServer((host, port), Handler)
+
+
+def cmd_serve(data_dir, port=8765):
+    layout_html(data_dir)        # fail fast on a broken data dir
+    srv = make_server(data_dir, port)
+    print(f"bbnet serve: http://127.0.0.1:{srv.server_address[1]}/ "
+          f"({data_dir}) — double-click a label to move it, Save writes "
+          "labels.yaml + LAYOUT.html; Ctrl-C to stop")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
     return 0
 
 
@@ -272,7 +473,6 @@ def cmd_score(data_dir, as_json=False):
     violations, _todos = drc.run_all(design, rules, colours, routed)
     s = score.score(design, islands, routed, violations, rails)
     if as_json:
-        import json
         print(json.dumps(s, indent=1))
     else:
         print(score.format_text(s))
@@ -300,7 +500,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command",
                         choices=["check", "report", "todo", "bom", "render",
-                                 "score"])
+                                 "score", "serve"])
     # DATA_DIR is a module global, read here -- inside main(), not at
     # import time -- so a host that sets cli.DATA_DIR before calling
     # main() is honoured.
@@ -317,6 +517,9 @@ def main(argv=None):
                              "pinmap:<mcu>")
     parser.add_argument("--json", action="store_true",
                         help="score only: machine-readable output")
+    parser.add_argument("--port", type=int, default=8765,
+                        help="serve only: port on 127.0.0.1 "
+                             "(default: %(default)s)")
     args = parser.parse_args(argv)
     # Registered before dispatch so it's live for every subcommand --
     # check/report/todo/bom/render all call load_data(), which hands
@@ -327,6 +530,8 @@ def main(argv=None):
         return cmd_render(args.data_dir, args.out)
     if args.command == "score":
         return cmd_score(args.data_dir, args.json)
+    if args.command == "serve":
+        return cmd_serve(args.data_dir, args.port)
     fn = {"check": cmd_check, "report": cmd_report,
           "todo": cmd_todo, "bom": cmd_bom}[args.command]
     return fn(args.data_dir)

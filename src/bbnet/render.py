@@ -19,6 +19,7 @@ board per page with checkbox kitting tables for the bench.
 from __future__ import annotations
 
 import html
+import re
 import zlib
 
 from bbnet.geometry import HoleAddr, RailAddr
@@ -351,7 +352,8 @@ def _level_layer(add, px, island, badges, writable):
             mx = _badge_x(writable, (a[0] + b[0]) / 2, hw)
             my = _badge_y(badges, mx, (a[1] + b[1]) / 2 - 7, hw, 8)
             deferred.append(
-                f'<g class="lyr-level lyr-label">'
+                f'<g class="lyr-level lyr-label"'
+                f'{_lbl(island.name, "d", lk.ref)}>'
                 f'{_badge_svg(mx, my, lab, LINK_COL)}</g>')
         for dv in (x for x in devices if x.level == lv):
             pts = [p for p in (_endpoint_px(px, t.addr)
@@ -400,7 +402,8 @@ def _level_layer(add, px, island, badges, writable):
                 mx = _badge_x(writable, mid[0], hw)
                 my = _badge_y(badges, mx, mid[1] - 8, hw, 8)
             deferred.append(
-                f'<g class="lyr-level lyr-label">'
+                f'<g class="lyr-level lyr-label"'
+                f'{_lbl(island.name, "d", dv.ref)}>'
                 f'{_badge_svg(mx, my, lab, DEVICE_COL)}</g>')
         add('</g>')
     add('</g>')
@@ -504,6 +507,80 @@ def _stack_label(ref, value):
     return f"{ref} {cut.rstrip(' -(,;:')}…"
 
 
+# ------------------------------------------------------ movable labels
+#
+# Automatic label placement is greedy and sometimes lands a label on
+# something worth seeing. Every label a person would want to nudge
+# carries a STABLE id in `data-lbl`, and `<data-dir>/labels.yaml` maps
+# ids to a hand-dragged (dx, dy) applied as a translate on that label's
+# group - plate, text and halo move together.
+#
+# The id scheme, chosen to survive unrelated edits (never the router's
+# sequence-numbered wire keys, which renumber when a wire is added):
+#
+#   <island>/p/<ref>         a passive's value badge
+#   <island>/d/<ref>         a device's or link bar's badge
+#   <island>/d/<ref>.<pin>   a narrow part's outboard pin label
+#   <island>/w/<endpoint>    a wire's edge label, keyed by its on-board
+#                            endpoint as written in the YAML (`1c`, `40R`,
+#                            `rail:5V`)
+#
+# Two labels that still collide (two leads out of one hole) take `#2`,
+# `#3`... in paint order. The island prefix keeps ids unique across a
+# panel, where several islands share one svg.
+
+def _lbl(island_name, kind, ref):
+    """The data-lbl attribute for one movable label."""
+    return f' data-lbl="{esc(f"{island_name}/{kind}/{ref}")}"'
+
+
+def _wire_anchor(w, lattice):
+    """The board endpoint an edge label belongs to: as DECLARED in the
+    YAML (`2R` stays `2R` whichever hole the router lands it in, so the
+    id survives a neighbour taking that hole). Falls back to the routed
+    start hole for a wire built without one."""
+    if getattr(w, "anchor", ""):
+        return w.anchor
+    c = w.path[0]
+    name = lattice.name(c.x)
+    return f"{name}@{c.y}" if name.startswith("rail:") else f"{c.y}{name}"
+
+
+_LBL_RE = re.compile(r' data-lbl="([^"]*)"')
+
+
+def _num(v):
+    return f"{round(float(v), 1):g}"
+
+
+def _finish_labels(labels, offsets):
+    """Make every data-lbl id in `labels` unique (`#2` suffixes, paint
+    order) and apply any hand-dragged offset as a translate on its group.
+
+    With no offsets the markup is untouched beyond the dedupe, so an
+    absent or empty labels.yaml renders byte-identically."""
+    seen = {}
+    offsets = offsets or {}
+
+    def fix(m):
+        base = html.unescape(m.group(1))
+        n = seen.get(base, 0) + 1
+        seen[base] = n
+        lid = base if n == 1 else f"{base}#{n}"
+        out = f' data-lbl="{esc(lid)}"'
+        off = offsets.get(lid)
+        if off and (float(off[0]) or float(off[1])):
+            out += f' transform="translate({_num(off[0])},{_num(off[1])})"'
+        return out
+
+    return [_LBL_RE.sub(fix, s) for s in labels]
+
+
+def label_ids(page):
+    """Every movable-label id rendered in a page (or svg fragment)."""
+    return {html.unescape(m.group(1)) for m in _LBL_RE.finditer(page)}
+
+
 def _ep_name(ep):
     if isinstance(ep, RailAddr):
         at = f"@{ep.row}" if getattr(ep, "row", 0) else ""
@@ -535,10 +612,12 @@ def wire_length_mm(wire):
     return int(round(max(mm, MM_PER_CELL) / 5.0)) * 5
 
 
-def render_island(island, wires, stats, lattice, rail_tints):
+def render_island(island, wires, stats, lattice, rail_tints,
+                  label_offsets=None):
     """One island, standalone: its body wrapped in its own <svg>."""
     body, labels, px = island_body(island, wires, stats, lattice,
-                                   rail_tints=rail_tints)
+                                   rail_tints=rail_tints,
+                                   label_offsets=label_offsets)
     return (f'<svg viewBox="0 0 {px.width} {px.height}" '
             f'width="{px.width}" height="{px.height}" '
             f'xmlns="http://www.w3.org/2000/svg">'
@@ -803,7 +882,9 @@ def _parts(add, px, island):
                 tx = x1 + 3 if out_right else x0 - 3
                 # keeps lyr-part so the components toggle still hides it
                 deferred.append(
-                    f'<g class="lyr-part"><text x="{tx}" '
+                    f'<g class="lyr-part"'
+                    f'{_lbl(island.name, "d", f"{part.ref}.{pn}")}>'
+                    f'<text x="{tx}" '
                     f'y="{px.y(a.row)+3}" class="pin halo" '
                     f'text-anchor="{anchor}">{esc(pn)}</text></g>')
             else:
@@ -900,7 +981,7 @@ def _passives(add, px, island, rail_tints, badges, writable):
         bdash = ' stroke-dasharray="3 2"' if side_bot else ""
         deferred_badges.append(
             f'<g class="wire lyr-passive lyr-label" data-w="{esc(pkey)}" '
-            f'data-pk="{esc(q.kind)}">'
+            f'data-pk="{esc(q.kind)}"{_lbl(island.name, "p", q.ref)}>'
             f'{_badge_svg(mx, my, lab, col, bdash)}</g>')
         add('</g>')
     return deferred_badges
@@ -1009,7 +1090,7 @@ def _lead_glyph(add, px, w, colour, title):
 
 
 def _edge_labels(px, w, lattice, label_y, print_side, room_on, gx,
-                 label_px):
+                 label_px, island_name=""):
     """The off-board text for whichever of this wire's ends land on a
     board edge — DEFERRED like every other label.
 
@@ -1043,8 +1124,9 @@ def _edge_labels(px, w, lattice, label_y, print_side, room_on, gx,
         # the stitched wires' lanes run right over it
         halo = ' class="lead lyr-label halo"' if label_px else \
             ' class="lead lyr-label"'
-        out.append(f'<text x="{round(lx, 1)}" y="{ly}"{halo}'
-                   f'{anchor}>{esc(shown)}{tip}</text>')
+        out.append(f'<g{_lbl(island_name, "w", _wire_anchor(w, lattice))}>'
+                   f'<text x="{round(lx, 1)}" y="{ly}"{halo}'
+                   f'{anchor}>{esc(shown)}{tip}</text></g>')
     return out
 
 
@@ -1139,7 +1221,7 @@ def _wire_layer(add, px, island, wires, lattice, label_px, rail_tints):
         if fly and w.kind == "lead" and w.path:
             _lead_glyph(add, px, w, colour, title)
         edge_labels += _edge_labels(px, w, lattice, label_y, print_side,
-                                    room_on, gx, label_px)
+                                    room_on, gx, label_px, island.name)
         _end_pucks(add, px, island, w, lattice, colour, title, jx, jy,
                    fly, gx, rail_tints)
         add('</g>')
@@ -1148,14 +1230,15 @@ def _wire_layer(add, px, island, wires, lattice, label_px, rail_tints):
 
 
 def island_body(island, wires, stats, lattice, skip_links=(),
-                label_px=None, *, rail_tints):
+                label_px=None, *, rail_tints, label_offsets=None):
     """SVG content for one island in its own coordinates, plus its
     PxMap. A panel translates several of these into one <svg>;
     `skip_links` names cross-island links the panel draws whole across
     the seam, so this island must not draw its half of them, and
     `label_px` ({side: px}) narrows the edge labels on a side that now
     shares a seam gutter with the neighbouring board instead of owning
-    a full margin.
+    a full margin. `label_offsets` ({label id: (dx, dy)}, from
+    labels.yaml) moves hand-dragged labels; see _finish_labels.
 
     The body of this function is the island's paint order, back to
     front — read it as the layer stack, and each layer's own function
@@ -1185,6 +1268,7 @@ def island_body(island, wires, stats, lattice, skip_links=(),
         [w for w in wires if not (w.link and w.link in skip_links)],
         lattice, label_px, rail_tints)
     labels += edge_labels
+    labels = _finish_labels(labels, label_offsets)
 
     # The label layer, painted last. Everything here names something —
     # a value, a pin, a row — and the sheet is unusable if a pipe lands
@@ -1306,7 +1390,7 @@ def _seam_geometry(links, maps, offsets):
     return geom
 
 
-def render_panel(panel, islands, routed, rail_tints):
+def render_panel(panel, islands, routed, rail_tints, label_offsets=None):
     """Several physically adjacent boards drawn in ONE svg, in the order
     they sit on the bench, with their shared interlinks crossing the
     seam as real wires."""
@@ -1334,7 +1418,8 @@ def render_panel(panel, islands, routed, rail_tints):
         wires, stats, lattice = routed[name]
         body, labs, px = island_body(islands[name], wires, stats, lattice,
                                      skip, budgets[name],
-                                     rail_tints=rail_tints)
+                                     rail_tints=rail_tints,
+                                     label_offsets=label_offsets)
         bodies[name], labels[name] = body, labs
         maps[name], offsets[name] = px, x
         height = max(height, px.height)
@@ -1826,6 +1911,19 @@ body.act-bot svg .seg-bot{opacity:1}
 body.act-bot svg .seg-top{opacity:.18}
 body.hide-label svg .lyr-label{display:none}
 body.hide-label svg .pin{display:none}
+svg [data-lbl]{-webkit-user-select:none;user-select:none}
+svg [data-lbl].lbl-armed{cursor:move;
+  filter:drop-shadow(0 0 1.5px #e91e63) drop-shadow(0 0 1.5px #e91e63)}
+.lblpanel{position:fixed;left:12px;bottom:12px;z-index:6;max-width:420px;
+  background:#fffdf5;border:1px solid #c9b98a;border-radius:8px;
+  padding:8px 10px;font:12px ui-monospace;box-shadow:0 2px 10px #0002}
+.lblpanel button{font:11px ui-monospace;margin:0 4px 0 0;padding:2px 8px;
+  border:1px solid #c9c2ad;border-radius:6px;background:#fff;cursor:pointer}
+.lblpanel .n{font-weight:700;margin-right:8px}
+.lblpanel .hint{color:#7a7263;font-size:10.5px;margin-top:4px}
+.lblpanel textarea{display:block;width:100%;height:110px;margin-top:6px;
+  font:10.5px ui-monospace}
+.lblpanel .msg{color:#b0413e;margin-top:4px}
 @media (max-width:1150px){
   body{margin:16px}
   .layers{position:static;width:auto;border-left:none;
@@ -1843,7 +1941,7 @@ body.hide-label svg .pin{display:none}
   .island .split,.zreset,.kitpos{display:none}
   .island .kit{position:static;max-height:none;overflow:visible}
   details{break-inside:avoid}
-  .layers{display:none}
+  .layers,.lblpanel{display:none}
 }
 """
 
@@ -2033,6 +2131,206 @@ JS = """
       last = null;
     }
   });
+  // ---- movable labels. Double-click a label to arm it, drag it clear
+  // of whatever it covers; click elsewhere or Esc to let go;
+  // alt+double-click puts a label back where the layout put it. Moves
+  // are pending (kept in localStorage per sheet) until saved to
+  // labels.yaml: `bbnet serve` writes it for you, a file:// page offers
+  // the YAML to paste instead.
+  (function () {
+    const lbls = {};
+    document.querySelectorAll('svg [data-lbl]').forEach(function (g) {
+      const t = g.transform && g.transform.baseVal.consolidate();
+      g._base = t ? [t.matrix.e, t.matrix.f] : [0, 0];
+      lbls[g.getAttribute('data-lbl')] = g;
+    });
+    if (!Object.keys(lbls).length) return;
+    const served = !!document.querySelector('meta[name="bbnet-serve"]');
+    const h1 = document.getElementById('top');
+    const KEY = 'bbnet-labels:' + (h1 ? h1.textContent : '').slice(0, 120);
+    let pend = {};    // id -> {dx, dy, reset}
+    try { pend = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; }
+    catch (e) { pend = {}; }
+    Object.keys(pend).forEach(function (id) {
+      if (!lbls[id]) delete pend[id];
+    });
+    function r1(v) { return Math.round(v * 10) / 10; }
+    function at(id) {
+      const g = lbls[id], p = pend[id] || {dx: 0, dy: 0};
+      const b = p.reset ? [0, 0] : g._base;
+      return [r1(b[0] + p.dx), r1(b[1] + p.dy)];
+    }
+    function show(id) {
+      const o = at(id);
+      if (o[0] || o[1]) {
+        lbls[id].setAttribute('transform',
+                              'translate(' + o[0] + ',' + o[1] + ')');
+      } else {
+        lbls[id].removeAttribute('transform');
+      }
+    }
+    function store() {
+      try {
+        if (Object.keys(pend).length) {
+          localStorage.setItem(KEY, JSON.stringify(pend));
+        } else {
+          localStorage.removeItem(KEY);
+        }
+      } catch (e) {}
+    }
+    const panel = document.createElement('div');
+    panel.className = 'lblpanel';
+    panel.hidden = true;
+    panel.innerHTML = '<span class="n"></span>' +
+      (served ? '<button data-a="save">Save</button>' : '') +
+      '<button data-a="copy">Copy YAML</button>' +
+      '<button data-a="discard">Discard</button>' +
+      '<div class="hint">' + (served ? 'Save writes labels.yaml and ' +
+        'LAYOUT.html, then reloads' : 'paste into labels.yaml beside ' +
+        'the island YAML, then bbnet render') +
+      ' · alt+double-click a label to reset it</div>' +
+      '<textarea readonly hidden></textarea><div class="msg"></div>';
+    document.body.appendChild(panel);
+    const msg = panel.querySelector('.msg');
+    const ta = panel.querySelector('textarea');
+    function refresh() {
+      const n = Object.keys(pend).length;
+      panel.hidden = !n;
+      panel.querySelector('.n').textContent =
+        n + (n === 1 ? ' label' : ' labels') + ' moved';
+      if (!n) { ta.hidden = true; msg.textContent = ''; }
+    }
+    function yaml() {
+      const lines = ['# dragged label offsets, svg px in the upright sheet',
+                     'offsets:'];
+      Object.keys(lbls).sort().forEach(function (id) {
+        const o = at(id);
+        if (o[0] || o[1]) {
+          lines.push('  ' + JSON.stringify(id) + ': [' + o[0] + ', ' +
+                     o[1] + ']');
+        }
+      });
+      if (lines.length === 2) lines[1] = 'offsets: {}';
+      return lines.join(String.fromCharCode(10)) + String.fromCharCode(10);
+    }
+    panel.addEventListener('click', function (e) {
+      e.stopPropagation();
+      const a = e.target.getAttribute && e.target.getAttribute('data-a');
+      if (a === 'discard') {
+        pend = {};
+        Object.keys(lbls).forEach(show);
+        store(); refresh();
+      } else if (a === 'copy') {
+        const text = yaml();
+        ta.value = text; ta.hidden = false; ta.select();
+        msg.textContent = '';
+        try {
+          navigator.clipboard.writeText(text).then(function () {
+            msg.textContent = 'copied - it replaces labels.yaml whole';
+          }, function () { msg.textContent = 'select and copy the text'; });
+        } catch (err) { msg.textContent = 'select and copy the text'; }
+      } else if (a === 'save') {
+        const body = {offsets: {}, reset: []};
+        Object.keys(pend).forEach(function (id) {
+          const p = pend[id];
+          if (p.reset) body.reset.push(id);
+          if (p.dx || p.dy) body.offsets[id] = [r1(p.dx), r1(p.dy)];
+        });
+        msg.textContent = 'saving...';
+        fetch('labels', {method: 'POST',
+                         headers: {'Content-Type': 'application/json'},
+                         body: JSON.stringify(body)})
+          .then(function (r) {
+            return r.json().then(function (j) {
+              if (!r.ok || !j.ok) throw new Error(j.error || r.status);
+              pend = {}; store(); location.reload();
+            });
+          })
+          .catch(function (err) { msg.textContent = 'save failed: ' + err; });
+      }
+    });
+    Object.keys(pend).forEach(show);
+    refresh();
+
+    let armed = null, drag = null, held = null, replaying = false;
+    function disarm() {
+      if (armed) armed.classList.remove('lbl-armed');
+      armed = null; drag = null;
+    }
+    // A label's single click still isolates its wire, but only once a
+    // double-click is ruled out: the click is held back briefly and
+    // replayed, and the second click of a double-click cancels it.
+    document.addEventListener('click', function (e) {
+      if (replaying) return;
+      const g = e.target.closest && e.target.closest('svg [data-lbl]');
+      if (armed && g !== armed) disarm();
+      if (!g) return;
+      e.stopPropagation();
+      if (g === armed) return;          // an armed label's clicks are drags
+      if (held) { clearTimeout(held); held = null; }
+      if (e.detail >= 2) return;
+      const t = e.target;
+      held = setTimeout(function () {
+        held = null; replaying = true;
+        try { t.dispatchEvent(new MouseEvent('click', {bubbles: true})); }
+        finally { replaying = false; }
+      }, 280);
+    }, true);
+    document.addEventListener('dblclick', function (e) {
+      const g = e.target.closest && e.target.closest('svg [data-lbl]');
+      if (!g) return;
+      e.preventDefault(); e.stopPropagation();
+      if (held) { clearTimeout(held); held = null; }
+      const id = g.getAttribute('data-lbl');
+      disarm();
+      if (e.altKey) {
+        if (g._base[0] || g._base[1]) pend[id] = {dx: 0, dy: 0, reset: true};
+        else delete pend[id];
+        show(id); store(); refresh();
+        return;
+      }
+      armed = g;
+      g.classList.add('lbl-armed');
+    }, true);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') disarm();
+    });
+    function local(g, e) {
+      // the label's translate lives in its PARENT's user space, so the
+      // pointer is mapped there - right at any zoom, pan or panel offset
+      const m = g.parentNode.getScreenCTM().inverse();
+      return new DOMPoint(e.clientX, e.clientY).matrixTransform(m);
+    }
+    // capture phase on the document: runs before the board's own
+    // pointerdown, so dragging an armed label never starts a pan
+    document.addEventListener('pointerdown', function (e) {
+      if (!armed || e.button !== 0 || !armed.contains(e.target)) return;
+      e.stopPropagation(); e.preventDefault();
+      const id = armed.getAttribute('data-lbl');
+      const p = pend[id] || {dx: 0, dy: 0};
+      drag = {id: id, p0: local(armed, e), dx: p.dx, dy: p.dy,
+              reset: !!p.reset, pid: e.pointerId};
+      try { armed.setPointerCapture(e.pointerId); } catch (_) {}
+    }, true);
+    document.addEventListener('pointermove', function (e) {
+      if (!drag || e.pointerId !== drag.pid) return;
+      e.stopPropagation(); e.preventDefault();
+      const q = local(armed, e);
+      pend[drag.id] = {dx: r1(drag.dx + q.x - drag.p0.x),
+                       dy: r1(drag.dy + q.y - drag.p0.y),
+                       reset: drag.reset};
+      show(drag.id);
+    }, true);
+    document.addEventListener('pointerup', function (e) {
+      if (!drag || e.pointerId !== drag.pid) return;
+      e.stopPropagation();
+      try { armed.releasePointerCapture(e.pointerId); } catch (_) {}
+      const p = pend[drag.id];
+      if (p && !p.dx && !p.dy && !p.reset) delete pend[drag.id];
+      drag = null;
+      store(); refresh();
+    }, true);
+  })();
 })();
 </script>
 """
@@ -2050,7 +2348,10 @@ def _section(title, board_svg, kit_html):
 
 
 def render_html(islands, design=None, rules=None, panels=(), colours=None,
-                title=None, rails=()):
+                title=None, rails=(), label_offsets=None):
+    """The whole build sheet. `label_offsets` ({label id: (dx, dy)}, the
+    `offsets:` of labels.yaml) nudges hand-dragged labels; None or {}
+    renders exactly as before any label was moved."""
     # A project's own rail names are supplied via colours.yaml `rail_tints:`,
     # merged over the three near-universal defaults so a caller only has to
     # override what it actually renames.
@@ -2084,7 +2385,8 @@ def render_html(islands, design=None, rules=None, panels=(), colours=None,
     # panels first — the boards that sit together on the bench read as
     # one build sheet; then whatever islands stand alone
     for panel in panels or ():
-        svg, links = render_panel(panel, islands, routed, rail_tints)
+        svg, links = render_panel(panel, islands, routed, rail_tints,
+                                  label_offsets)
         total_seam += len(links)
         kit = []
         for name in panel.islands:
@@ -2109,7 +2411,8 @@ def render_html(islands, design=None, rules=None, panels=(), colours=None,
         blocks.append(_section(
             f'<span id="{island_anchor(name)}"></span>{esc(name)}'
             + (_UP if on_rail else ""),
-            render_island(islands[name], wires, stats, lattice, rail_tints),
+            render_island(islands[name], wires, stats, lattice, rail_tints,
+                          label_offsets),
             kitting_table(islands[name], wires, lattice)))
     law = ("full pipe = focused layer · translucent pipe = the other "
            "layer (KiCad-style; the focus radio flips which, the "
@@ -2135,7 +2438,9 @@ def render_html(islands, design=None, rules=None, panels=(), colours=None,
             "that board; while zoomed, scroll or drag to pan — move the "
             "cursor off the board (or ⟲ reset) to scroll the page "
             "· drag the divider between board and kitting table to "
-            "resize the panes")
+            "resize the panes · double-click a label to drag it clear of "
+            "what it covers (alt+double-click resets it); moves are saved "
+            "to labels.yaml")
     show = "".join(
         f'<label><input type="checkbox" checked data-h="{h}">{t}</label>'
         for h, t in (("part", "components"), ("res", "resistors"),
