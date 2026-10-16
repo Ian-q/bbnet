@@ -49,7 +49,8 @@ import re
 from dataclasses import dataclass
 
 from bbnet.geometry import HOLE_TENTHS, HoleAddr, RailAddr
-from bbnet.model import CAP_KINDS, SWITCHED_SETS, ModelError, radial_cover
+from bbnet.model import (CAP_KINDS, SWITCHED_SETS, ModelError, pin_hole,
+                         radial_cover)
 
 
 @dataclass
@@ -532,16 +533,30 @@ def rule_passive_overlap(design, rules, colours):
         # an axial body lying across a device: a TO-92 / TO-220 stands
         # over the line through its legs, so a resistor drawn across
         # that line would have to pass through the part
-        for dv in getattr(isl, "devices", ()):
-            pts = [(HOLE_TENTHS[t.addr.hole], t.addr.row)
-                   for t in dv.terminals
-                   if isinstance(t.addr, HoleAddr) and t.addr.hole]
+        # Single-row footprint parts (a TO-92 TL431, a header) are the
+        # same shape. Two-row ones (dips, Clicks, modules) are not: a
+        # socketed module legitimately has parts under its body.
+        bodies = [(dv.ref, getattr(dv, "level", 0),
+                   [(HOLE_TENTHS[t.addr.hole], t.addr.row)
+                    for t in dv.terminals
+                    if isinstance(t.addr, HoleAddr) and t.addr.hole])
+                  for dv in getattr(isl, "devices", ())]
+        for part in isl.parts:
+            if part.fp is None or part.fp.kind != "sil":
+                continue
+            pts = []
+            for addr in part.pins.values():
+                h = pin_hole(part, addr)
+                if h:
+                    pts.append((HOLE_TENTHS[h], addr.row))
+            bodies.append((part.ref, getattr(part, "level", 0), pts))
+        for ref, dlevel, pts in bodies:
             if len(pts) < 2:
                 continue
             pts.sort()
             dlo, dhi = pts[0], pts[-1]
             for q in isl.passives:
-                if getattr(q, "level", 0) != getattr(dv, "level", 0):
+                if getattr(q, "level", 0) != dlevel:
                     continue
                 a = _passive_xy(q.a, q.b)
                 b = _passive_xy(q.b, q.a)
@@ -550,9 +565,9 @@ def rule_passive_overlap(design, rules, colours):
                 if _segs_touch(a, b, dlo, dhi):
                     out.append(Violation(
                         "passive-overlap", "error",
-                        f"{isl.name}: {q.ref} lies across {dv.ref}'s body "
-                        "- a part cannot pass through a transistor; "
-                        "re-hole it clear of the legs' line"))
+                        f"{isl.name}: {q.ref} lies across {ref}'s body "
+                        "- a part cannot pass through a standing part's "
+                        "legs; re-hole it clear of the legs' line"))
         # an axial body lying across a radial can's footprint: the can
         # stands over those holes, so nothing can lie flat through them
         cans = [(q, radial_cover(q)) for q in isl.passives if q.dia]
