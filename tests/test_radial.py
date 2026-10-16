@@ -98,3 +98,28 @@ def test_bad_dia_is_rejected(bad):
 def test_dia_needs_named_holes():
     with pytest.raises(model.ModelError, match="dia needs both legs"):
         _design(lambda isl: isl["passives"][-1].update(to="rail:top-"))
+
+
+
+def _left_design(extra):
+    parts = model.parts_lib_from(bbnet._yaml(FIXTURES / "parts.yaml"))
+    raw = {p.stem: bbnet._yaml(p) for p in FIXTURES.glob("demo-*.yaml")}
+    raw["demo-left"]["passives"] += extra
+    islands = {d["island"]: model.island_from(d, parts)
+               for d in raw.values()}
+    return model.derive(islands, registry())
+
+
+def test_a_resistor_across_a_transistor_is_an_error():
+    # demo-left Q1 is a TO-92 2N7000 standing on 36a/37a/38a. A resistor
+    # from the GND rail to 37c lies straight across the line of its legs.
+    d = _left_design([{"ref": "R7", "kind": "resistor", "value": "10k",
+                       "from": "rail:top-", "to": "37c"}])
+    assert any("R7 lies across Q1's body" in m
+               for m in _msgs(d, drc.rule_passive_overlap))
+
+
+def test_a_resistor_beside_a_transistor_is_fine():
+    d = _left_design([{"ref": "R8", "kind": "resistor", "value": "10k",
+                       "from": "36c", "to": "38c"}])
+    assert not any("R8" in m for m in _msgs(d, drc.rule_passive_overlap))
