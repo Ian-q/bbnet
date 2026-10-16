@@ -1,7 +1,7 @@
 """Radial parts (`dia:` in mm) bury the holes under their body. A
 6.3 mm 100 uF can on legs 3b/4b covers 3a, 4a, 3c and 4c - nothing can
 then go in those holes (B1) or lie flat across them (B9), and the router
-steers around them. Found building the VCU v2 lever cell, 2026-10-15."""
+steers around them. Found on a real build where a jumper had been laid under the can."""
 from pathlib import Path
 
 import pytest
