@@ -23,7 +23,7 @@ import re
 import zlib
 
 from bbnet.geometry import HoleAddr, RailAddr
-from bbnet.model import dip_right_col
+from bbnet.model import dip_right_col, pin_hole
 from bbnet.router import BOT, TOP, route_design
 
 # px geometry
@@ -899,6 +899,12 @@ def _parts(add, px, island):
     return deferred
 
 
+# Diodes and LEDs: `from` is the ANODE, `to` the CATHODE - the band
+# end of a diode, the short leg / flat of an LED - the same "from is
+# the + end" convention electrolytics use.
+BANDED_KINDS = {"diode", "led"}
+
+
 def _passives(add, px, island, rail_tints, badges, writable):
     """Two-terminal passives. Rail-to-rail entry decouplers stagger down
     from row 1.
@@ -924,11 +930,15 @@ def _passives(add, px, island, rail_tints, badges, writable):
             f'data-pk="{esc(q.kind)}">')
         col = PASSIVE_COLS.get(q.kind, "#666")
         polar = q.kind == "electrolytic"
+        banded = q.kind in BANDED_KINDS
         val = " ".join(x for x in (q.value, getattr(q, "rating", ""))
                        if x)
         title = f"{q.ref} {val}" + (" — UNDERSIDE" if side_bot else "")
         if polar:
             title += f" — polarized: + at {_ep_name(q.a)}"
+        if banded:
+            title += (f" — anode at {_ep_name(q.a)}, cathode (band) at "
+                      f"{_ep_name(q.b)}")
         lyr = "seg-bot" if side_bot else "seg-top"
         dash = (' stroke-dasharray="6 4" stroke-opacity="0.85"'
                 if side_bot else "")
@@ -958,6 +968,21 @@ def _passives(add, px, island, rail_tints, badges, writable):
             add(f'<text x="{round(pb[0]+ux*9, 1)}" '
                 f'y="{round(pb[1]+uy*9+3, 1)}" class="pol" '
                 f'text-anchor="middle" fill="{col}">&#8722;</text>')
+        if banded:
+            # the cathode band, drawn where it sits on the part: across
+            # the body near the `to` end, plus a K just beyond that leg
+            dx, dy = pb[0] - pa[0], pb[1] - pa[1]
+            ln = max((dx * dx + dy * dy) ** 0.5, 1)
+            ux, uy = dx / ln, dy / ln
+            bx, by = pb[0] - ux * min(7, ln / 3), pb[1] - uy * min(7, ln / 3)
+            nx, ny = -uy * 5, ux * 5
+            add(f'<line class="{lyr} band" x1="{round(bx - nx, 1)}" '
+                f'y1="{round(by - ny, 1)}" x2="{round(bx + nx, 1)}" '
+                f'y2="{round(by + ny, 1)}" stroke="{col}" '
+                f'stroke-width="3.2"><title>{esc(title)}</title></line>')
+            add(f'<text x="{round(pb[0]+ux*9, 1)}" '
+                f'y="{round(pb[1]+uy*9+3, 1)}" class="pol" '
+                f'text-anchor="middle" fill="{col}">K</text>')
         a_rail = isinstance(q.a, RailAddr)
         b_rail = isinstance(q.b, RailAddr)
         if a_rail:
@@ -1741,6 +1766,16 @@ def seam_length_mm(a_wire, b_wire):
     return int(round(max(mm, MM_PER_CELL) / 5.0)) * 5
 
 
+def _part_row(island, ref, value, where, kind):
+    """One kitting row for a placed part or device: ref, part number and
+    every leg's hole. These were missing from the table entirely, so a
+    builder reading the cut list never saw the chip it had to fetch."""
+    return (f"<tr class='krow' data-w='d:{esc(island.name)}:{esc(ref)}' "
+            f"data-kind='part'><td class='cb'></td><td>—</td>"
+            f"<td>{esc(kind)}</td><td>{esc(ref)} {esc(value)}</td>"
+            f"<td>{esc(where)}</td><td>—</td></tr>")
+
+
 def kitting_table(island, wires, lattice, seam=None):
     """Cut list for one island. In a panel, `seam` ({link: (a, b)}) folds
     each stitched wire into a single row on the island that declares it —
@@ -1793,6 +1828,8 @@ def kitting_table(island, wires, lattice, seam=None):
         col = PASSIVE_COLS.get(q.kind, "#666")
         if q.kind == "electrolytic":
             route = f"{_ep_name(q.a)}(+) → {_ep_name(q.b)}(−)"
+        elif q.kind in BANDED_KINDS:
+            route = f"{_ep_name(q.a)}(A) → {_ep_name(q.b)}(K, band)"
         else:
             route = f"{_ep_name(q.a)} → {_ep_name(q.b)}"
         if getattr(q, "side", "top") == "bottom":
@@ -1806,8 +1843,34 @@ def kitting_table(island, wires, lattice, seam=None):
             f"<td><i style='background:{col}'></i>—</td>"
             f"<td>{esc(q.kind)}</td><td>{esc(q.ref)} {esc(val)}</td>"
             f"<td>{route}</td><td>—</td></tr>")
+    # parts and devices: what to fetch and where each leg goes. A module
+    # with a long header gets its pin-1 hole instead of every pin.
+    n_parts = 0
+    for part in island.parts:
+        legs = []
+        for name, addr in part.pins.items():
+            hole = pin_hole(part, addr)
+            legs.append(f"{name} {addr.row}{hole}" if hole
+                        else f"{name} {_ep_name(addr)}")
+        anchor = part.anchor
+        where = (" · ".join(legs) if len(legs) <= 8 else
+                 f"pin 1 at {_ep_name(anchor) if anchor else legs[0]} "
+                 f"({len(legs)} pins)")
+        rows.append(_part_row(island, part.ref,
+                              part.value or part.part_id or "", where,
+                              "part"))
+        n_parts += 1
+    for dv in getattr(island, "devices", ()):
+        legs = sorted(dv.terminals,
+                      key=lambda t: (getattr(t.addr, "row", 0),
+                                     getattr(t.addr, "hole", "") or ""))
+        where = " · ".join(f"{t.name} {_ep_name(t.addr)}" for t in legs)
+        rows.append(_part_row(island, dv.ref, dv.value or dv.kind, where,
+                              dv.kind))
+        n_parts += 1
+    extra = f" + {n_parts} parts" if n_parts else ""
     return (f"<details open><summary>kitting table — {island.name} "
-            f"({shown} wires + {len(island.passives)} passives)"
+            f"({shown} wires + {len(island.passives)} passives{extra})"
             "</summary><table>"
             "<tr><th>✓</th><th>colour</th><th>kind</th><th>wire</th>"
             "<th>route</th><th>cut</th></tr>" + "".join(rows)
