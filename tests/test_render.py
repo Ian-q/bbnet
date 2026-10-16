@@ -126,7 +126,7 @@ def test_passives_in_kitting_and_badge_layout():
     # the same spot (C12/C13 crossing pair stacked before)
     import re
     badge_rx = re.compile(
-        r'lyr-label" data-w="[^"]+" data-pk="[^"]+">'
+        r'lyr-label" data-w="[^"]+" data-pk="[^"]+"[^>]*>'
         r'<rect x="([-\d.]+)" y="([-\d.]+)"')
     total = 0
     for isl_svg in html.split("<h2>")[1:]:
@@ -434,7 +434,7 @@ def test_outboard_pin_labels_still_follow_the_components_toggle():
     themselves or switching components off strands them on the board."""
     svg = _left_svg()
     i = svg.find('class="pin halo"')
-    assert '<g class="lyr-part">' in svg[max(0, i - 60):i]
+    assert '<g class="lyr-part"' in svg[max(0, i - 120):i]
 
 
 def test_row_numbers_are_painted_over_the_wires():

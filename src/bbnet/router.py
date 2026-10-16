@@ -82,6 +82,10 @@ class RoutedWire:
     # "a" on the declaring half and "b" on the stub.
     link: str = ""
     link_end: str = ""
+    # the on-board endpoint as DECLARED (`2R`, `12a`, `rail:5V`) for a
+    # wire that leaves by an edge: its edge label belongs to it. Stable
+    # across re-routes, which is what a hand-moved label is keyed on.
+    anchor: str = ""
 
     @property
     def underside(self):
@@ -418,18 +422,19 @@ class _IslandRouter:
         return [], set()
 
     def _airwire(self, kind, colour, label, a_cell, b_cell,
-                 link="", link_end=""):
+                 link="", link_end="", anchor=""):
         """A wire whose body hangs beneath the board (underside: true):
         free air, no channel competition, drawn point-to-point."""
         (ax, ay), (bx, by) = a_cell, b_cell
         rw = RoutedWire(f"air:{len(self.airwires):03d}:{label}", kind,
-                        colour or "", label, link=link, link_end=link_end)
+                        colour or "", label, link=link, link_end=link_end,
+                        anchor=anchor)
         rw.path = [Cell(TOP, ax, ay), Cell(BOT, ax, ay),
                    Cell(BOT, bx, by), Cell(TOP, bx, by)]
         self.airwires.append(rw)
 
     def _flywire(self, kind, colour, label, cells, side,
-                 link="", link_end=""):
+                 link="", link_end="", anchor=""):
         """Off-board wire (lead or interlink): it rises from its hole
         and flies through the air, occupying NO surface channel — never
         routed, just a straight run to its exit edge at the terminal's
@@ -442,7 +447,8 @@ class _IslandRouter:
         (ax, ay) = lo if side == "L" else hi
         ex = self.lat.x_of("edgeL" if side == "L" else "edgeR")
         rw = RoutedWire(f"fly:{len(self.flywires):03d}:{label}", kind,
-                        colour or "", label, link=link, link_end=link_end)
+                        colour or "", label, link=link, link_end=link_end,
+                        anchor=anchor)
         rw.path = [Cell(TOP, ax, ay), Cell(TOP, ex, ay)]
         self.flywires.append(rw)
 
@@ -517,7 +523,8 @@ class _IslandRouter:
             if not a:
                 continue
             self._flywire("lead", w.colour,
-                          f"{_local(w.at)} · {w.label}", a, None)
+                          f"{_local(w.at)} · {w.label}", a, None,
+                          anchor=_local(w.at))
 
         for idx, j in enumerate(self.isl.interlinks):
             if j.offgrid:      # off-board tie (e.g. supply star point)
@@ -531,9 +538,11 @@ class _IslandRouter:
             if getattr(j, "underside", False):
                 ex = self.lat.x_of("edgeR" if side != "L" else "edgeL")
                 self._airwire("interlink", j.colour, label,
-                              a[0], (ex, a[0][1]), link, "a")
+                              a[0], (ex, a[0][1]), link, "a",
+                              anchor=_local(j.a))
                 continue
-            self._flywire("interlink", j.colour, label, a, side, link, "a")
+            self._flywire("interlink", j.colour, label, a, side, link, "a",
+                          anchor=_local(j.a))
 
         for origin, text, colour, pair, nid, under, link in remote_stubs:
             try:
@@ -549,9 +558,11 @@ class _IslandRouter:
             if under:
                 ex = self.lat.x_of("edgeR" if side != "L" else "edgeL")
                 self._airwire("interlink", colour, label,
-                              a[0], (ex, a[0][1]), link, "b")
+                              a[0], (ex, a[0][1]), link, "b",
+                              anchor=_local(ep))
                 continue
-            self._flywire("interlink", colour, label, a, side, link, "b")
+            self._flywire("interlink", colour, label, a, side, link, "b",
+                          anchor=_local(ep))
 
         # sort pairs adjacent (mates route back-to-back, so attraction
         # sees the partner's fresh path) while keeping a total order
