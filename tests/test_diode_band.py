@@ -53,3 +53,13 @@ def test_kitting_table_names_the_ends():
 def test_resistors_get_no_band():
     html = _sheet("diode")
     assert not re.search(r'band"[^>]*><title>R2', html)
+
+
+def test_kitting_table_lists_parts_and_devices_with_their_holes():
+    html = _sheet("diode")
+    # demo-right's U2 is a 0.3" dip at 8c: pin 1 in 8c, pin 8 opposite
+    assert "<td>U2 Demo octal</td>" in html
+    assert re.search(r"<td>U2 Demo octal</td><td>1 8c · [^<]*8 8h", html)
+    # a device's legs are listed in board order
+    assert re.search(r"<td>Q1 2N7000</td><td>G 36a · D 37a · S 38a</td>",
+                     html)

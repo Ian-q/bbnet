@@ -23,7 +23,7 @@ import re
 import zlib
 
 from bbnet.geometry import HoleAddr, RailAddr
-from bbnet.model import dip_right_col
+from bbnet.model import dip_right_col, pin_hole
 from bbnet.router import BOT, TOP, route_design
 
 # px geometry
@@ -1766,6 +1766,16 @@ def seam_length_mm(a_wire, b_wire):
     return int(round(max(mm, MM_PER_CELL) / 5.0)) * 5
 
 
+def _part_row(island, ref, value, where, kind):
+    """One kitting row for a placed part or device: ref, part number and
+    every leg's hole. These were missing from the table entirely, so a
+    builder reading the cut list never saw the chip it had to fetch."""
+    return (f"<tr class='krow' data-w='d:{esc(island.name)}:{esc(ref)}' "
+            f"data-kind='part'><td class='cb'></td><td>—</td>"
+            f"<td>{esc(kind)}</td><td>{esc(ref)} {esc(value)}</td>"
+            f"<td>{esc(where)}</td><td>—</td></tr>")
+
+
 def kitting_table(island, wires, lattice, seam=None):
     """Cut list for one island. In a panel, `seam` ({link: (a, b)}) folds
     each stitched wire into a single row on the island that declares it —
@@ -1833,8 +1843,34 @@ def kitting_table(island, wires, lattice, seam=None):
             f"<td><i style='background:{col}'></i>—</td>"
             f"<td>{esc(q.kind)}</td><td>{esc(q.ref)} {esc(val)}</td>"
             f"<td>{route}</td><td>—</td></tr>")
+    # parts and devices: what to fetch and where each leg goes. A module
+    # with a long header gets its pin-1 hole instead of every pin.
+    n_parts = 0
+    for part in island.parts:
+        legs = []
+        for name, addr in part.pins.items():
+            hole = pin_hole(part, addr)
+            legs.append(f"{name} {addr.row}{hole}" if hole
+                        else f"{name} {_ep_name(addr)}")
+        anchor = part.anchor
+        where = (" · ".join(legs) if len(legs) <= 8 else
+                 f"pin 1 at {_ep_name(anchor) if anchor else legs[0]} "
+                 f"({len(legs)} pins)")
+        rows.append(_part_row(island, part.ref,
+                              part.value or part.part_id or "", where,
+                              "part"))
+        n_parts += 1
+    for dv in getattr(island, "devices", ()):
+        legs = sorted(dv.terminals,
+                      key=lambda t: (getattr(t.addr, "row", 0),
+                                     getattr(t.addr, "hole", "") or ""))
+        where = " · ".join(f"{t.name} {_ep_name(t.addr)}" for t in legs)
+        rows.append(_part_row(island, dv.ref, dv.value or dv.kind, where,
+                              dv.kind))
+        n_parts += 1
+    extra = f" + {n_parts} parts" if n_parts else ""
     return (f"<details open><summary>kitting table — {island.name} "
-            f"({shown} wires + {len(island.passives)} passives)"
+            f"({shown} wires + {len(island.passives)} passives{extra})"
             "</summary><table>"
             "<tr><th>✓</th><th>colour</th><th>kind</th><th>wire</th>"
             "<th>route</th><th>cut</th></tr>" + "".join(rows)
