@@ -851,6 +851,17 @@ def _passives(add, px, island, rail_tints, badges, writable):
         lyr = "seg-bot" if side_bot else "seg-top"
         dash = (' stroke-dasharray="6 4" stroke-opacity="0.85"'
                 if side_bot else "")
+        if getattr(q, "dia", 0):
+            # a radial can: draw its real footprint, so the holes it
+            # buries read as buried on the build sheet
+            r_t = q.dia / 2 / 2.54            # radius in 0.1" pitches
+            pitch_x = px.col_x("b") - px.col_x("a")
+            add(f'<ellipse class="{lyr}" cx="{(pa[0] + pb[0]) / 2}" '
+                f'cy="{(pa[1] + pb[1]) / 2}" rx="{round(r_t * pitch_x, 1)}" '
+                f'ry="{round(r_t * CELL, 1)}" fill="{col}" '
+                f'fill-opacity="0.18" stroke="{col}" stroke-width="1.4"'
+                f'{dash}><title>{esc(title)} - body dia {q.dia:g} mm'
+                '</title></ellipse>')
         add(f'<line class="{lyr}" x1="{pa[0]}" y1="{pa[1]}" '
             f'x2="{pb[0]}" y2="{pb[1]}" stroke="{col}" '
             f'stroke-width="2.8" stroke-linecap="round"{dash}>'
