@@ -180,7 +180,7 @@ own index):
 | B6 colour | jumper/lead colour vs. `colours.yaml` vocabulary + classes |
 | B7 pinmap-xcheck | bench placement vs. an external pin-allocation table |
 | B8 passive-span | a passive placed tighter than its leads can bend |
-| B9 passive-overlap | two same-face passive bodies crossing or lying along each other |
+| B9 passive-overlap | two same-face passive bodies crossing or lying along each other; also a passive lying across a device (TO-92 etc.) or under a radial can |
 | B10 cap-polarity | electrolytics are polarized (`from` = "+" by convention); flags one reversed across GND and power |
 | B11 voltage-rating | a rated part across a known power net: error when the rail exceeds the rating, warning on thin derating |
 | B12 in-node detour | a wire landing in one hole of a half-row and then crawling across its own node to leave — waivable via `in_node_waivers` |

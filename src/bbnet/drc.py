@@ -529,6 +529,30 @@ def rule_passive_overlap(design, rules, colours):
                         f"each other on {where} — move one to another "
                         "level (or side: bottom) or re-hole it"))
             placed.append((q.ref, level, a, b))
+        # an axial body lying across a device: a TO-92 / TO-220 stands
+        # over the line through its legs, so a resistor drawn across
+        # that line would have to pass through the part
+        for dv in getattr(isl, "devices", ()):
+            pts = [(HOLE_TENTHS[t.addr.hole], t.addr.row)
+                   for t in dv.terminals
+                   if isinstance(t.addr, HoleAddr) and t.addr.hole]
+            if len(pts) < 2:
+                continue
+            pts.sort()
+            dlo, dhi = pts[0], pts[-1]
+            for q in isl.passives:
+                if getattr(q, "level", 0) != getattr(dv, "level", 0):
+                    continue
+                a = _passive_xy(q.a, q.b)
+                b = _passive_xy(q.b, q.a)
+                if a is None or b is None:
+                    continue
+                if _segs_touch(a, b, dlo, dhi):
+                    out.append(Violation(
+                        "passive-overlap", "error",
+                        f"{isl.name}: {q.ref} lies across {dv.ref}'s body "
+                        "- a part cannot pass through a transistor; "
+                        "re-hole it clear of the legs' line"))
         # an axial body lying across a radial can's footprint: the can
         # stands over those holes, so nothing can lie flat through them
         cans = [(q, radial_cover(q)) for q in isl.passives if q.dia]
