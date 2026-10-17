@@ -242,6 +242,15 @@ devices:
   - {ref: RV1, kind: pot,   value: 10k,    pins: {A: 30a, W: 31a, B: 32a}}
 ```
 
+A device may also carry **`legs:`**, its leg order off the datasheet with
+the flat (marked) face toward you, legs down, left to right - `legs:
+S-G-D` for a 2N7000, `C-B-E` for a BC547, `E-B-C` for a 2N3904, `G-D-S`
+for a TO-220 IRF part. bbnet then works out which long edge the flat face
+must point at (standing at the column-a edge, row 1 is on your left, so
+legs in datasheet order down the rows face column a), prints it in the
+kitting table and draws a bar on that side of the part. A transistor
+tester that reports a MOSFET as E/B/C means S/G/D.
+
 A device may carry `seeds:` (pin → net name) exactly as a footprint part
 does — a regulator's `OUT` naming the rail it produces is the common
 case — and its pins are first-class: `net_of_pin()` sees them, `rules.yaml`
