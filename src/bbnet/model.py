@@ -185,6 +185,10 @@ class Footprint:
     span: int | None = None         # dip pin-row spacing in 0.1" units
                                     # (ravine counts 3); None = assume the
                                     # symmetric mirror around the ravine
+    body_cols: int = 0              # sil only: a module whose PCB lies
+                                    # flat BESIDE its header, burying this
+                                    # many hole columns on its pin rows
+                                    # (+ toward column j, - toward a)
     overhang: tuple | None = None   # (rows_above_pin1, rows_below_last):
                                     # physical body extent beyond the pin
                                     # rows (clicks tower over their
@@ -218,10 +222,18 @@ def parts_lib_from(d):
                 raise ModelError(f"parts.{pid}: overhang must be "
                                  "[rows_above, rows_below], ints >= 0")
             over = tuple(over)
+        body_cols = spec.get("body_cols", 0)
+        if body_cols:
+            if kind != "sil" or isinstance(body_cols, bool) \
+                    or not isinstance(body_cols, int):
+                raise ModelError(f"parts.{pid}: body_cols must be a non-zero "
+                                 "int on a sil footprint (+ toward column "
+                                 "j, - toward a)")
         lib[pid] = Footprint(
             kind, names,
             {str(k): str(v) for k, v in (spec.get("seeds") or {}).items()},
-            spec.get("pin_signals"), span, over)
+            spec.get("pin_signals"), span, body_cols=body_cols or 0,
+            overhang=over)
     return lib
 
 
@@ -239,6 +251,30 @@ def dip_right_col(part):
 
 
 MM_PER_TENTH = 2.54
+
+
+def body_cover(part):
+    """Holes buried by a module lying flat beside its header
+    (footprint `body_cols:`): [(row, half, hole)] over its pin rows. A
+    breakout on a right-angle header covers the columns its PCB lies
+    over just as surely as a can does - nothing goes in those holes."""
+    fp = part.fp
+    if fp is None or not getattr(fp, "body_cols", 0) or part.anchor is None \
+            or part.anchor.hole is None:
+        return []
+    cols = "abcdefghij"
+    i0 = cols.index(part.anchor.hole)
+    step = 1 if fp.body_cols > 0 else -1
+    out = []
+    for k in range(1, abs(fp.body_cols) + 1):
+        i = i0 + step * k
+        if not 0 <= i < len(cols):
+            break
+        hole = cols[i]
+        half = "L" if hole in "abcde" else "R"
+        for addr in part.pins.values():
+            out.append((addr.row, half, hole))
+    return sorted(set(out))
 
 
 def face_toward(dv):
@@ -1174,6 +1210,11 @@ def derive(islands, signals):
                 # B3/B7 with nothing to find: the exact silent-empty
                 # failure this registry exists to prevent.
                 signal_map(source)
+            # a module lying flat beside its header buries those holes
+            for row, half, hole in body_cover(part):
+                hole_members.setdefault(
+                    (isl.name, row, half, hole), []).append(
+                    f"{part.ref} body")
             for pn, addr in part.pins.items():
                 # register the leg's own hole, so B1 catches a wire end
                 # (or another leg) pushed into it

@@ -49,8 +49,8 @@ import re
 from dataclasses import dataclass
 
 from bbnet.geometry import HOLE_TENTHS, HoleAddr, RailAddr
-from bbnet.model import (CAP_KINDS, SWITCHED_SETS, ModelError, pin_hole,
-                         radial_cover)
+from bbnet.model import (CAP_KINDS, SWITCHED_SETS, ModelError, body_cover,
+                         pin_hole, radial_cover)
 
 
 @dataclass
@@ -570,12 +570,17 @@ def rule_passive_overlap(design, rules, colours):
                         "legs; re-hole it clear of the legs' line"))
         # an axial body lying across a radial can's footprint: the can
         # stands over those holes, so nothing can lie flat through them
-        cans = [(q, radial_cover(q)) for q in isl.passives if q.dia]
-        for can, cover in cans:
+        # ... and under a module's PCB lying beside its header
+        cans = [(q, q.ref, f"(dia {q.dia:g} mm) - re-hole it clear of the "
+                 "can", getattr(q, "level", 0), radial_cover(q))
+                for q in isl.passives if q.dia]
+        cans += [(p, p.ref, "- it lies flat beside its header; re-hole "
+                  "clear of it", getattr(p, "level", 0), body_cover(p))
+                 for p in isl.parts if body_cover(p)]
+        for can, cref, why, clevel, cover in cans:
             pts = [(HOLE_TENTHS[h], r) for r, _half, h in cover]
             for q in isl.passives:
-                if q is can or getattr(q, "level", 0) != \
-                        getattr(can, "level", 0):
+                if q is can or getattr(q, "level", 0) != clevel:
                     continue
                 a = _passive_xy(q.a, q.b)
                 b = _passive_xy(q.b, q.a)
@@ -584,9 +589,8 @@ def rule_passive_overlap(design, rules, colours):
                 if any(_segs_touch(a, b, p, p) for p in pts):
                     out.append(Violation(
                         "passive-overlap", "error",
-                        f"{isl.name}: {q.ref} lies under {can.ref}'s body "
-                        f"(dia {can.dia:g} mm) - re-hole it clear of the "
-                        "can"))
+                        f"{isl.name}: {q.ref} lies under {cref}'s body "
+                        f"{why}"))
     return out
 
 

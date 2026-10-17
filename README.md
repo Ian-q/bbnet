@@ -225,6 +225,11 @@ draws the band (and a K) at the `to` end and the kitting table says
 `(A) → (K, band)`. These land in `design.edges` and feed the geometry rules
 (B8 span, B9 overlap, B10 polarity, B11 rating).
 
+A **module lying flat beside its header** (an INA226-class breakout on
+a right-angle header) declares it on its footprint: `body_cols: 2` buries
+the two hole columns toward column j on every pin row (`-2` toward
+column a). The buried holes get the same treatment as a can's below.
+
 A **radial** part (a can standing on its two legs) takes `dia:`, its
 body diameter in mm: `{ref: C1, kind: electrolytic, value: 100u, from:
 4b, to: 3b, dia: 6.3}`. The body is centred between the legs, and every

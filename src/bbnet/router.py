@@ -35,8 +35,8 @@ from dataclasses import dataclass, field
 from bbnet.geometry import (
     HoleAddr, LEFT_HOLES, RIGHT_HOLES, RailAddr, parse_local,
 )
-from bbnet.model import (Island, PinRef, XIsland, dip_right_col, pin_hole,
-                         radial_cover)
+from bbnet.model import (Island, PinRef, XIsland, body_cover, dip_right_col,
+                         pin_hole, radial_cover)
 
 TOP, BOT = 0, 1
 
@@ -238,6 +238,9 @@ class _IslandRouter:
                 if col is not None:
                     self.solder_cells.add((col, a.row))
             self.body_cells |= self._body(part)
+            self.body_cells |= {(lat.x_of(h), r)
+                                for r, _half, h in body_cover(part)
+                                if r <= lat.rows}
             self.passive_cells |= self._overhang_cells(part)
         for q in isl.passives:
             occupy(q.a)

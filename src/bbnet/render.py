@@ -23,7 +23,7 @@ import re
 import zlib
 
 from bbnet.geometry import HoleAddr, RailAddr
-from bbnet.model import dip_right_col, face_toward, pin_hole
+from bbnet.model import body_cover, dip_right_col, face_toward, pin_hole
 from bbnet.router import BOT, TOP, route_design
 
 # px geometry
@@ -867,6 +867,18 @@ def _parts(add, px, island):
                 f'stroke-opacity="0.35" stroke-dasharray="4 3">'
                 f'<title>{esc(part.ref)} physical body (hovers on '
                 f'headers — soft keep-out)</title></rect>')
+        cover = body_cover(part)
+        if cover:
+            # the module's PCB, lying flat beside its header: drawn as
+            # solid board so the holes under it read as gone
+            cx = [px.col_x(h) for _r, _hf, h in cover] + [min(xs), max(xs)]
+            add(f'<rect x="{min(cx) - 7}" y="{y0}" '
+                f'width="{max(cx) - min(cx) + 14}" height="{y1 - y0}" '
+                f'rx="4" fill="#2b3a4a" fill-opacity="0.10" '
+                f'stroke="#2b3a4a" stroke-opacity="0.45">'
+                f'<title>{esc(part.ref)}: PCB lies flat over '
+                f'{len({h for _r, _hf, h in cover})} column(s) beside the '
+                f'header - those holes are buried</title></rect>')
         add(f'<rect x="{x0}" y="{y0}" width="{x1-x0}" height="{y1-y0}" '
             f'rx="5" class="part"><title>{esc(part.ref)}: '
             f'{esc(part.value)}</title></rect>')
