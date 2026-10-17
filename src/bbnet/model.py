@@ -241,6 +241,30 @@ def dip_right_col(part):
 MM_PER_TENTH = 2.54
 
 
+def face_toward(dv):
+    """Which long edge a device's flat (marked) face must point at, from
+    its datasheet leg order and where its legs are: 'a' or 'j', or None
+    when that can't be said (no `legs:`, or the legs are not in one hole
+    column).
+
+    Stand at the board's column-a edge looking across it: row 1 is on
+    your left. A part whose flat face is toward you reads its datasheet
+    order left to right, i.e. in increasing rows. So legs placed in
+    datasheet order down the rows face column a; reversed, column j."""
+    if not dv.legs:
+        return None
+    addrs = {t.name: t.addr for t in dv.terminals}
+    holes = {getattr(a, "hole", None) for a in addrs.values()}
+    if len(holes) != 1 or None in holes:
+        return None
+    rows = [addrs[n].row for n in dv.legs]
+    if rows == sorted(rows) and len(set(rows)) == len(rows):
+        return "a"
+    if rows == sorted(rows, reverse=True) and len(set(rows)) == len(rows):
+        return "j"
+    return None
+
+
 def radial_cover(q):
     """Holes buried under a radial part's body: [(row, half, hole)].
 
@@ -464,6 +488,11 @@ class Device:
     level: int = 0
     normally: str = ""   # switches only: the state the netlist assumes
     seeds: dict = field(default_factory=dict)  # pin -> net name
+    # The part's leg order off its datasheet, FLAT (marked) FACE TOWARD
+    # YOU, legs down, left to right - e.g. ("S", "G", "D") for a 2N7000,
+    # ("C", "B", "E") for a BC547, ("G", "D", "S") for a TO-220 IRF part.
+    # Empty = not given. See face_toward().
+    legs: tuple = ()
 
     def addr_of(self, pin):
         for t in self.terminals:
@@ -874,10 +903,20 @@ def island_from(d, parts_lib):
             raise ModelError(f"{name}.{ref}: seed(s) for pin(s) "
                              f"{unknown_seeds} — expected {list(pinout)}")
         terminals = [Terminal(p, ep(placed[p]), idx[p]) for p in pinout]
+        legs = dv.get("legs") or ()
+        if isinstance(legs, str):
+            legs = [x.strip() for x in re.split(r"[-,\s]+", legs) if x.strip()]
+        legs = tuple(str(x) for x in legs)
+        if legs and sorted(legs) != sorted(placed):
+            raise ModelError(
+                f"{name}.{ref}: legs {'-'.join(legs)} must name each of "
+                f"its pins once ({'/'.join(pinout)}) - the datasheet order "
+                "with the flat face toward you, legs down, left to right")
         devices.append(Device(ref, kind, str(dv.get("value", "")),
                               terminals, name, side,
                               str(dv.get("rating", "")), level,
-                              (str(normally) if normally else ""), seeds))
+                              (str(normally) if normally else ""), seeds,
+                              legs))
 
     risers = []
     for rs in d.get("risers") or []:

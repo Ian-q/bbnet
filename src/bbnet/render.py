@@ -23,7 +23,7 @@ import re
 import zlib
 
 from bbnet.geometry import HoleAddr, RailAddr
-from bbnet.model import dip_right_col, pin_hole
+from bbnet.model import dip_right_col, face_toward, pin_hole
 from bbnet.router import BOT, TOP, route_design
 
 # px geometry
@@ -361,6 +361,19 @@ def _level_layer(add, px, island, badges, writable):
             if len(pts) < 2:
                 continue
             lifted = [_lift(p, lv) for p in pts]
+            face = face_toward(dv)
+            if face:
+                # the flat face, drawn as a bar alongside the legs on the
+                # side it points to (column a is left on the upright sheet)
+                off = -8 if face == "a" else 8
+                ys = [p[1] for p in lifted]
+                fx = round(lifted[0][0] + off, 1)
+                add(f'<line class="flatface" x1="{fx}" '
+                    f'y1="{round(min(ys) - 4, 1)}" x2="{fx}" '
+                    f'y2="{round(max(ys) + 4, 1)}" stroke="{DEVICE_COL}" '
+                    f'stroke-width="3" stroke-linecap="round"><title>'
+                    f'{esc(dv.ref)}: flat face toward column {face}'
+                    '</title></line>')
             path = " ".join(f"{p[0]},{p[1]}" for p in lifted)
             add(f'<polyline points="{path}" fill="none" '
                 f'stroke="{DEVICE_COL}" stroke-width="2.4" '
@@ -1865,6 +1878,12 @@ def kitting_table(island, wires, lattice, seam=None):
                       key=lambda t: (getattr(t.addr, "row", 0),
                                      getattr(t.addr, "hole", "") or ""))
         where = " · ".join(f"{t.name} {_ep_name(t.addr)}" for t in legs)
+        face = face_toward(dv)
+        if face:
+            where += f" — flat face toward column {face}"
+        elif dv.legs:
+            where += (f" — ⚠ legs not in a straight {'-'.join(dv.legs)} "
+                      "line: check the placement")
         rows.append(_part_row(island, dv.ref, dv.value or dv.kind, where,
                               dv.kind))
         n_parts += 1
