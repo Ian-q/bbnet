@@ -30,7 +30,7 @@ def test_datasheet_order_down_the_rows_faces_column_a():
 
 
 def test_reversed_order_faces_column_j():
-    # the VCU lever FETs: D 5b, G 6b, S 7b
+    # a lever FET placed D 5b, G 6b, S 7b
     q = _dev(("S", "G", "D"), D=H("x", 5, "L", "b"), G=H("x", 6, "L", "b"),
              S=H("x", 7, "L", "b"))
     assert model.face_toward(q) == "j"
