@@ -277,6 +277,31 @@ def body_cover(part):
     return sorted(set(out))
 
 
+def body_holes(part):
+    """Every hole a part's body sits over, its own leg holes excluded:
+    {(row, hole)}. A dip covers the columns between its two pin rows,
+    over its pin rows plus any `overhang:`; a sil breakout with
+    `body_cols:` covers what body_cover() says. A bare header covers
+    nothing. Wires can be tucked under a socketed module, but only ones
+    that stay on the board."""
+    fp = part.fp
+    if fp is None or part.anchor is None or part.anchor.hole is None:
+        return set()
+    out = {(r, h) for r, _half, h in body_cover(part)}
+    if fp.kind == "dip":
+        cols = "abcdefghij"
+        i0 = cols.index(part.anchor.hole)
+        i1 = cols.index(dip_right_col(part))
+        lo, hi = min(i0, i1), max(i0, i1)
+        rows = [a.row for a in part.pins.values()]
+        up, down = fp.overhang or (0, 0)
+        for r in range(max(1, min(rows) - up), max(rows) + down + 1):
+            for i in range(lo, hi + 1):
+                out.add((r, cols[i]))
+    legs = {(a.row, pin_hole(part, a) or a.hole) for a in part.pins.values()}
+    return out - legs
+
+
 def face_toward(dv):
     """Which long edge a device's flat (marked) face must point at, from
     its datasheet leg order and where its legs are: 'a' or 'j', or None

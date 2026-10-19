@@ -38,6 +38,10 @@ Rules (each encodes a real breadboard bug class):
                    in it, or across a passive body — the router prices
                    both as SOFT costs and will pay them; this reports
                    what it paid (needs routed geometry)
+  B19 off-board under body  an interlink or lead ending in a hole under
+                   a module's body: it cannot leave the board from
+                   there. Land it outside the body and run a short
+                   jumper underneath instead
 
 Note on B9: two bodies crossing at DIFFERENT levels is not a collision.
 That is what building upward is for, so the rule compares level, not
@@ -49,8 +53,9 @@ import re
 from dataclasses import dataclass
 
 from bbnet.geometry import HOLE_TENTHS, HoleAddr, RailAddr
-from bbnet.model import (CAP_KINDS, SWITCHED_SETS, ModelError, body_cover,
-                         pin_hole, radial_cover)
+from bbnet.model import (CAP_KINDS, SWITCHED_SETS, ModelError, XIsland,
+                         body_cover, body_holes, parse_local, pin_hole,
+                         radial_cover)
 
 
 @dataclass
@@ -933,8 +938,70 @@ def rule_link_stock(design, rules, colours):
     return out
 
 
+def rule_offboard_under_body(design, rules, colours):
+    """B19: an interlink or lead ending under a module's body.
+
+    A wire that leaves the board has to rise out of its hole and away,
+    and a module sitting over that hole is in the way: the lead ends up
+    pinned under the PCB, bent sideways and fighting the socket. A
+    jumper tucked under the module is fine, since it stays on the board,
+    so the fix is to land the off-board wire in an open row beside the
+    body and bridge to the buried node with a short jumper. Underside
+    runs are exempt: they leave beneath the board. On a `frozen:` island
+    (already built, not to be re-laid-out) it is a warning: the wire is
+    there and works, and the rule is for the next layout."""
+    under = {}
+    for iname, isl in design.islands.items():
+        for part in isl.parts:
+            if getattr(part, "level", 0) != 0:
+                continue
+            for rh in body_holes(part):
+                under.setdefault((iname, *rh), part.ref)
+
+    def addr_of(ep, isl):
+        if isinstance(ep, XIsland):
+            tgt = design.islands.get(ep.island)
+            if tgt is None:
+                return None
+            try:
+                return parse_local(ep.text, tgt.name, tgt.board, tgt.rails)
+            except Exception:
+                return None
+        return ep
+
+    def check(ep, isl, what):
+        a = addr_of(ep, isl)
+        if not isinstance(a, HoleAddr) or not a.hole:
+            return None
+        ref = under.get((a.island, a.row, a.hole))
+        if ref is None:
+            return None
+        built = getattr(design.islands.get(a.island), "frozen", "")
+        return Violation(
+            "offboard under body", "warning" if built else "error",
+            f"{a.island}:{a.row}{a.hole}: {what} ends under {ref}'s body - "
+            f"it cannot leave the board from there; land it in an open "
+            f"row beside {ref} and jumper across underneath")
+
+    out = []
+    for iname in sorted(design.islands):
+        isl = design.islands[iname]
+        for j in isl.interlinks:
+            if getattr(j, "underside", False):
+                continue
+            for ep in (j.a, j.b):
+                v = check(ep, isl, f"interlink {j.a} -> {j.b}")
+                if v:
+                    out.append(v)
+        for w in isl.leads:
+            v = check(w.at, isl, f"lead {w.label or w.net or w.colour}")
+            if v:
+                out.append(v)
+    return out
+
+
 def run_all(design, rules, colours, routed=None):
-    """Run every rule -> (violations, todos), stable order B1..B18.
+    """Run every rule -> (violations, todos), stable order B1..B19.
 
     `routed` (island -> (wires, stats, lattice) from router.route_design)
     enables the geometry-dependent rules; without it B12 and B13 are
@@ -945,7 +1012,7 @@ def run_all(design, rules, colours, routed=None):
                  rule_passive_overlap, rule_cap_polarity,
                  rule_voltage_rating, rule_link_support,
                  rule_link_stray_pin, rule_link_stock,
-                 rule_closed_by_default):
+                 rule_closed_by_default, rule_offboard_under_body):
         violations.extend(rule(design, rules, colours))
     violations.extend(rule_in_node_detour(design, rules, colours, routed))
     violations.extend(rule_halfrow_landing(design, rules, colours, routed))
