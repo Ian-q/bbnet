@@ -381,6 +381,20 @@ or down a hole column, never diagonally and never across the ravine.
 Clipped positions still count toward the bar's length: snipping a pin
 doesn't shorten the PCB it was on.
 
+## Views
+
+The dock's **view** switch relabels every leg on the sheet without a
+re-render:
+
+| View | Each leg shows | Also |
+|---|---|---|
+| pin names | its pin name (`VIN`, `SDA`, `C`/`B`/`E`) | the default, and what prints |
+| pin numbers | its pin number (footprint order; a device's legs in its `legs:` order) | |
+| holes | the hole it stands in (`4d`) | both legs of every passive are named too |
+| nets | its net name (unnamed `N$` nets read `–`) | every node strip and rail is tinted by its net; click a tint to light that net on every board and name it in the dock |
+
+The choice is remembered per sheet in the browser.
+
 ## Moving labels
 
 Label placement is automatic and greedy, and now and then a badge lands
