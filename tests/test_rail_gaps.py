@@ -3,8 +3,8 @@ row: their holes come in groups of five with a blank between groups
 (none beside rows 6, 12, 18, 24 or 30), and each sits ~0.4 of a pitch
 below the row it is numbered with. A rail landing pinned to a gap row
 has no hole to go in (B1), and the router never picks one. B8 also
-measures a leg that lands on a rail, so a can squeezed across two
-side-by-side rail holes is flagged. Both found on a real half-size
+measures a leg that lands on a rail, so a lobed ceramic squeezed
+across two side-by-side rail holes is flagged. Both found on a real half-size
 build, 2026-10-19."""
 from pathlib import Path
 
@@ -81,12 +81,12 @@ def test_router_never_lands_an_unpinned_rail_end_in_a_gap():
                 assert BOARDS["half-400"].has_rail_hole(c.y), w.label
 
 
-def test_a_can_across_a_rail_pair_is_too_short():
+def test_a_ceramic_across_a_rail_pair_is_too_short():
     def edit(raw):
         raw["demo-right"]["passives"].append(
-            {"ref": "C9", "kind": "electrolytic", "value": "10u",
+            {"ref": "C9", "kind": "ceramic", "value": "100n",
              "from": "rail:top+@13", "to": "rail:top-@13"})
-    rules = {"passive_min_span": {"electrolytic": 2.0}}
+    rules = {"passive_min_span": {"ceramic": 1.4}}
     assert any("C9" in m and "span 1.00" in m
                for m in _msgs(drc.rule_passive_span, edit, rules))
 
@@ -94,8 +94,8 @@ def test_a_can_across_a_rail_pair_is_too_short():
 def test_over_one_up_two_fits():
     def edit(raw):
         raw["demo-right"]["passives"].append(
-            {"ref": "C9", "kind": "electrolytic", "value": "10u",
+            {"ref": "C9", "kind": "ceramic", "value": "100n",
              "from": "rail:top+@13", "to": "rail:top-@11"})
-    rules = {"passive_min_span": {"electrolytic": 2.0}}
+    rules = {"passive_min_span": {"ceramic": 1.4}}
     assert not any("C9" in m
                    for m in _msgs(drc.rule_passive_span, edit, rules))
