@@ -114,6 +114,65 @@ class PxMap:
         return self.x(self.lat.x_of(name))
 
 
+# ---------------------------------------------------------- view modes
+#
+# The sheet has four views of the same board, switched from the dock:
+#
+#   names   every leg labelled with its pin name (VIN, SDA, C/B/E) - the
+#           default, and what prints
+#   numbers the part's own pin numbers (1..N in footprint order; a
+#           transistor's legs counted in its `legs:` datasheet order)
+#   holes   the breadboard hole each leg stands in (`4d`), plus both
+#           ends of every passive
+#   nets    every node strip and rail tinted by the net it carries, so a
+#           whole 3V3 row reads red, not just the wire into it; legs are
+#           labelled with their net. Click a strip to light that net up
+#           across the whole sheet
+#
+# A label carries all its variants as tspans and CSS shows one, so the
+# switch is instant and needs no re-render. With no script running (a
+# print, a saved copy) the names view is what shows.
+
+VIEWS = ("name", "num", "hole", "net")
+NET_PALETTE = ("#1f77b4", "#2ca02c", "#9467bd", "#ff7f0e", "#17becf",
+               "#8c564b", "#e377c2", "#bcbd22", "#3949ab", "#00897b",
+               "#c0ca33", "#6d4c41")
+
+
+class NetView:
+    """What the view modes need from the derived design: the net on a
+    node, the net on a pin, and a stable colour per net."""
+
+    def __init__(self, design, rail_tints):
+        self.design = design
+        self.tints = rail_tints
+
+    def key_net(self, key):
+        nid = self.design.nid_of_key.get(key)
+        return None if nid is None else self.design.nets[nid]
+
+    def pin_net(self, ref, pin):
+        nid = self.design.pin_nid.get((ref, str(pin)))
+        return None if nid is None else self.design.nets[nid]
+
+    def colour(self, net):
+        if net.name in self.tints:
+            return self.tints[net.name]
+        return NET_PALETTE[zlib.crc32(net.name.encode()) % len(NET_PALETTE)]
+
+
+def _vspans(variants):
+    """tspans for a label's views; `variants` maps a VIEWS entry to its
+    text and must hold "name". A view it does not mention shows the
+    name."""
+    name = variants["name"]
+    out = []
+    for v in VIEWS:
+        txt = variants.get(v, name)
+        out.append(f'<tspan class="vn vn-{v}">{esc(txt)}</tspan>')
+    return "".join(out)
+
+
 def _pin_cols(part):
     """Per-pin hole column letters for a footprint part (render only)."""
     if part.anchor is None or part.fp is None:
@@ -384,15 +443,21 @@ def _level_layer(add, px, island, badges, writable):
             # three identical dots left the builder guessing which leg
             # of a TO-92 went in which hole. Names longer than three
             # characters are cut to three; the hover title has the rest.
+            order = list(dv.legs) or [t.name for t in dv.terminals]
             for t, p in zip(dv.terminals, lifted):
                 short = str(t.name)[:3]
+                v = {"name": short}
+                if t.name in order:
+                    v["num"] = str(order.index(t.name) + 1)
+                if getattr(t.addr, "hole", None):
+                    v["hole"] = f"{t.addr.row}{t.addr.hole}"
                 r = 4.6 if len(short) == 1 else 6.4
                 add(f'<circle cx="{p[0]}" cy="{p[1]}" r="{r}" '
                     f'fill="#fff" stroke="{DEVICE_COL}" '
                     f'stroke-width="1.4"><title>{esc(dv.ref)}.'
                     f'{esc(t.name)}</title></circle>')
                 add(f'<text x="{p[0]}" y="{p[1] + 2.1}" class="dpin '
-                    f'lyr-label" text-anchor="middle">{esc(short)}'
+                    f'lyr-label" text-anchor="middle">{_vspans(v)}'
                     f'<title>{esc(dv.ref)}.{esc(t.name)}</title></text>')
             mid = lifted[len(lifted) // 2]
             lab = _stack_label(dv.ref, dv.value)
@@ -626,11 +691,11 @@ def wire_length_mm(wire):
 
 
 def render_island(island, wires, stats, lattice, rail_tints,
-                  label_offsets=None):
+                  label_offsets=None, nets=None):
     """One island, standalone: its body wrapped in its own <svg>."""
     body, labels, px = island_body(island, wires, stats, lattice,
                                    rail_tints=rail_tints,
-                                   label_offsets=label_offsets)
+                                   label_offsets=label_offsets, nets=nets)
     return (f'<svg viewBox="0 0 {px.width} {px.height}" '
             f'width="{px.width}" height="{px.height}" '
             f'xmlns="http://www.w3.org/2000/svg">'
@@ -766,6 +831,41 @@ def _ravine_keepouts(add, px, island):
             f'stroke="#8a8a8a" stroke-width="1.4"/>')
 
 
+def _net_layer(add, px, island, lattice, nets):
+    """The nets view: every node strip (five holes of one row-half) and
+    every rail band tinted by the net it carries. Hidden unless the nets
+    view is on; painted under the parts so legs and wires stay readable.
+    Each tint carries data-net, which is what click-to-light-a-net keys
+    on, so the same net on two boards lights together."""
+    if nets is None:
+        return
+    add('<g class="lyr-net">')
+    left = [c for c in lattice.cols if lattice.half(lattice.x_of(c)) == "L"]
+    right = [c for c in lattice.cols if lattice.half(lattice.x_of(c)) == "R"]
+    for r in range(1, lattice.rows + 1):
+        for half, cols in (("L", left), ("R", right)):
+            net = nets.key_net(("row", island.name, r, half))
+            if net is None:
+                continue
+            x0 = px.col_x(cols[0]) - HOLE_DX / 2 + 1
+            x1 = px.col_x(cols[-1]) + HOLE_DX / 2 - 1
+            add(f'<rect class="net" data-net="{net.nid}" x="{x0}" '
+                f'y="{px.y(r) - CELL / 2 + 1.5}" width="{x1 - x0}" '
+                f'height="{CELL - 3}" rx="3" fill="{nets.colour(net)}">'
+                f'<title>{esc(net.name)}</title></rect>')
+    for strip in island.board.rails:
+        net = nets.key_net(("rail", island.name, strip))
+        if net is None:
+            continue
+        x = px.col_x(f"rail:{strip}")
+        add(f'<rect class="net" data-net="{net.nid}" x="{x - RAIL_W / 2}" '
+            f'y="{HEAD - 4}" width="{RAIL_W}" '
+            f'height="{lattice.rows * CELL + 8}" rx="4" '
+            f'fill="{nets.colour(net)}"><title>{esc(net.name)}</title>'
+            '</rect>')
+    add('</g>')
+
+
 def _hole_cols(lattice):
     return [i for i in range(len(lattice.cols))
             if lattice.half(i) is not None]
@@ -835,7 +935,33 @@ def _column_letters(add, px, lattice):
                 f'text-anchor="middle">{esc(letter)}</text>')
 
 
-def _parts(add, px, island):
+def _net_label(net, room):
+    """A net's name cut to `room` characters for a pin label. An unnamed
+    net (`N$island:4R`) is only a node id, so it reads as a dash: the
+    tint and its hover title already say all there is."""
+    if net.name.startswith("N$"):
+        return "–"
+    if len(net.name) <= room:
+        return net.name
+    return net.name[:max(room - 1, 1)] + "…"
+
+
+def _part_pin_variants(part, pn, a, col, nets, room=12):
+    """{view: text} for one footprint pin; `room` is how many characters
+    the label has before it runs into the one opposite."""
+    v = {"name": str(pn)}
+    if part.fp is not None and pn in part.fp.pin_names:
+        v["num"] = str(part.fp.pin_names.index(pn) + 1)
+    if col:
+        v["hole"] = f"{a.row}{col}"
+    if nets is not None:
+        net = nets.pin_net(part.ref, pn)
+        if net is not None:
+            v["net"] = _net_label(net, room)
+    return v
+
+
+def _parts(add, px, island, nets=None):
     """Footprint parts: the body rect, its soft overhang keep-out, a
     per-pin label, and the ref rotated down the middle.
 
@@ -895,11 +1021,15 @@ def _parts(add, px, island):
         out_right = narrow and {a.half for a in pins.values()} == {"R"}
         for pn, a in pins.items():
             if cols:
-                cx = px.col_x(cols[pn])
+                col = cols[pn]
             elif a.hole:
-                cx = px.col_x(a.hole)
+                col = a.hole
             else:
                 continue
+            cx = px.col_x(col)
+            # a wide part's labels share its body with the row opposite
+            room = 7 if narrow else max(int(((x1 - x0) / 2 - 6) / 4.8), 3)
+            spans = _vspans(_part_pin_variants(part, pn, a, col, nets, room))
             if narrow:
                 add(f'<circle cx="{cx}" cy="{px.y(a.row)}" r="2.4" '
                     f'fill="#333"/>')
@@ -911,12 +1041,12 @@ def _parts(add, px, island):
                     f'{_lbl(island.name, "d", f"{part.ref}.{pn}")}>'
                     f'<text x="{tx}" '
                     f'y="{px.y(a.row)+3}" class="pin halo" '
-                    f'text-anchor="{anchor}">{esc(pn)}</text></g>')
+                    f'text-anchor="{anchor}">{spans}</text></g>')
             else:
                 anchor = "start" if cx - x0 < x1 - cx else "end"
                 tx = x0 + 4 if anchor == "start" else x1 - 4
                 add(f'<text x="{tx}" y="{px.y(a.row)+3}" class="pin" '
-                    f'text-anchor="{anchor}">{esc(pn)}</text>')
+                    f'text-anchor="{anchor}">{spans}</text>')
         midx, midy = (x0 + x1) / 2, (y0 + y1) / 2
         add(f'<text x="{midx}" y="{midy}" class="pref" text-anchor="middle" '
             f'transform="rotate(90 {midx} {midy})">{esc(part.ref)}</text>')
@@ -1034,6 +1164,18 @@ def _passives(add, px, island, rail_tints, badges, writable):
             f'data-pk="{esc(q.kind)}"{_lbl(island.name, "p", q.ref)}>'
             f'{_badge_svg(mx, my, lab, col, bdash)}</g>')
         add('</g>')
+        # the holes view names both legs' holes, just beyond each end
+        dx, dy = pb[0] - pa[0], pb[1] - pa[1]
+        ln = max((dx * dx + dy * dy) ** 0.5, 1)
+        ux, uy = dx / ln, dy / ln
+        for ep, (ex, ey), sgn in ((q.a, pa, -1), (q.b, pb, 1)):
+            if not getattr(ep, "hole", None):
+                continue
+            deferred_badges.append(
+                f'<text x="{round(ex + sgn * ux * 10, 1)}" '
+                f'y="{round(ey + sgn * uy * 10 + 3, 1)}" '
+                f'class="vo vo-hole pin halo" text-anchor="middle" '
+                f'fill="{col}">{esc(_ep_name(ep))}</text>')
     return deferred_badges
 
 
@@ -1280,7 +1422,8 @@ def _wire_layer(add, px, island, wires, lattice, label_px, rail_tints):
 
 
 def island_body(island, wires, stats, lattice, skip_links=(),
-                label_px=None, *, rail_tints, label_offsets=None):
+                label_px=None, *, rail_tints, label_offsets=None,
+                nets=None):
     """SVG content for one island in its own coordinates, plus its
     PxMap. A panel translates several of these into one <svg>;
     `skip_links` names cross-island links the panel draws whole across
@@ -1302,6 +1445,7 @@ def island_body(island, wires, stats, lattice, skip_links=(),
     _end_jumper_pads(add, px, island)
     _ravine_keepouts(add, px, island)
     _hole_grid(add, px, lattice)
+    _net_layer(add, px, island, lattice, nets)
     _column_letters(add, px, lattice)
     # one badge-collision list for the whole island: passives and the
     # level stack label the same board and must not stack on each other
@@ -1310,7 +1454,7 @@ def island_body(island, wires, stats, lattice, skip_links=(),
     badges = _device_leg_plates(px, island)
     nx_l, nx_r = _number_strip_x(px, lattice)
     writable = (nx_l + NUM_W / 2 + 2, nx_r - NUM_W / 2 - 2)
-    labels = _parts(add, px, island)
+    labels = _parts(add, px, island, nets)
     labels += _passives(add, px, island, rail_tints, badges, writable)
     labels += _level_layer(add, px, island, badges, writable)
     label_y, edge_labels = _wire_layer(
@@ -1440,7 +1584,8 @@ def _seam_geometry(links, maps, offsets):
     return geom
 
 
-def render_panel(panel, islands, routed, rail_tints, label_offsets=None):
+def render_panel(panel, islands, routed, rail_tints, label_offsets=None,
+                 nets=None):
     """Several physically adjacent boards drawn in ONE svg, in the order
     they sit on the bench, with their shared interlinks crossing the
     seam as real wires."""
@@ -1469,7 +1614,8 @@ def render_panel(panel, islands, routed, rail_tints, label_offsets=None):
         body, labs, px = island_body(islands[name], wires, stats, lattice,
                                      skip, budgets[name],
                                      rail_tints=rail_tints,
-                                     label_offsets=label_offsets)
+                                     label_offsets=label_offsets,
+                                     nets=nets)
         bodies[name], labels[name] = body, labs
         maps[name], offsets[name] = px, x
         height = max(height, px.height)
@@ -2005,6 +2151,18 @@ body.act-bot svg .seg-bot{opacity:1}
 body.act-bot svg .seg-top{opacity:.18}
 body.hide-label svg .lyr-label{display:none}
 body.hide-label svg .pin{display:none}
+.vn-num,.vn-hole,.vn-net,.vo{display:none}
+body.view-num .vn-name,body.view-hole .vn-name,body.view-net .vn-name{
+  display:none}
+body.view-num .vn-num,body.view-hole .vn-hole,body.view-net .vn-net,
+body.view-hole .vo-hole{display:inline}
+svg .lyr-net{display:none}
+body.view-net svg .lyr-net{display:inline}
+svg .lyr-net .net{fill-opacity:.3;cursor:pointer}
+body.view-net svg .pin{font-weight:700}
+body.netfocus svg .lyr-net .net:not(.nsel){fill-opacity:.07}
+body.netfocus svg .lyr-net .net.nsel{fill-opacity:.62}
+.netname{font:700 12px ui-monospace;margin:6px 0;word-break:break-all}
 svg [data-lbl]{-webkit-user-select:none;user-select:none}
 svg [data-lbl].lbl-armed{cursor:move;
   filter:drop-shadow(0 0 1.5px #e91e63) drop-shadow(0 0 1.5px #e91e63)}
@@ -2036,6 +2194,8 @@ svg [data-lbl].lbl-armed{cursor:move;
   .island .kit{position:static;max-height:none;overflow:visible}
   details{break-inside:avoid}
   .layers,.lblpanel{display:none}
+  .vn-num,.vn-hole,.vn-net,.vo,svg .lyr-net{display:none!important}
+  .vn-name{display:inline!important}
 }
 """
 
@@ -2047,6 +2207,57 @@ JS = """
       document.body.classList.toggle('hide-' + cb.dataset.h, !cb.checked);
     });
   });
+  // ---- view modes: names / numbers / holes / nets (see VIEWS). The
+  // choice is remembered per sheet; clicking a net tint lights that net
+  // on every board and names it in the dock.
+  (function () {
+    const radios = document.querySelectorAll('.layers input[name="view"]');
+    if (!radios.length) return;
+    const h1 = document.getElementById('top');
+    const KEY = 'bbnet-view:' + (h1 ? h1.textContent : '').slice(0, 120);
+    const label = document.createElement('div');
+    label.className = 'netname';
+    radios[radios.length - 1].closest('label').after(label);
+    function clearNet() {
+      document.querySelectorAll('.nsel').forEach(function (el) {
+        el.classList.remove('nsel');
+      });
+      document.body.classList.remove('netfocus');
+      label.textContent = '';
+    }
+    function setView(v) {
+      ['name', 'num', 'hole', 'net'].forEach(function (k) {
+        document.body.classList.toggle('view-' + k, k === v);
+      });
+      radios.forEach(function (rb) { rb.checked = rb.value === v; });
+      if (v !== 'net') clearNet();
+    }
+    radios.forEach(function (rb) {
+      rb.addEventListener('change', function () {
+        setView(rb.value);
+        try { localStorage.setItem(KEY, rb.value); } catch (e) {}
+      });
+    });
+    let v0 = 'name';
+    try { v0 = localStorage.getItem(KEY) || 'name'; } catch (e) {}
+    setView(v0);
+    let lit = null;
+    document.addEventListener('click', function (e) {
+      if (!document.body.classList.contains('view-net')) return;
+      const r = e.target.closest && e.target.closest('svg .lyr-net .net');
+      if (!r) return;
+      e.stopPropagation();
+      const id = r.getAttribute('data-net');
+      clearNet();
+      if (id === lit) { lit = null; return; }
+      lit = id;
+      document.querySelectorAll('svg .lyr-net .net[data-net="' + id + '"]')
+        .forEach(function (el) { el.classList.add('nsel'); });
+      document.body.classList.add('netfocus');
+      const t = r.querySelector('title');
+      label.textContent = t ? t.textContent : '';
+    }, true);
+  })();
   document.querySelectorAll('.layers input[name="actlyr"]').forEach(
     function (rb) {
       rb.addEventListener('change', function () {
@@ -2453,6 +2664,7 @@ def render_html(islands, design=None, rules=None, panels=(), colours=None,
                       **((colours or {}).get("rail_tints") or {}))
     heading = title or "Breadboard layout — routed build sheet"
     routed = route_design(islands, design, rules, panels, rails)
+    nets = NetView(design, rail_tints) if design is not None else None
     legend = "".join(
         f'<span><i style="background:{WIRE_COLOURS[c]}"></i>{c}</span>'
         for c in ("RED", "BLK", "YEL", "BLU", "GRN", "WHT", "ORG", "PUR",
@@ -2480,7 +2692,7 @@ def render_html(islands, design=None, rules=None, panels=(), colours=None,
     # one build sheet; then whatever islands stand alone
     for panel in panels or ():
         svg, links = render_panel(panel, islands, routed, rail_tints,
-                                  label_offsets)
+                                  label_offsets, nets)
         total_seam += len(links)
         kit = []
         for name in panel.islands:
@@ -2506,7 +2718,7 @@ def render_html(islands, design=None, rules=None, panels=(), colours=None,
             f'<span id="{island_anchor(name)}"></span>{esc(name)}'
             + (_UP if on_rail else ""),
             render_island(islands[name], wires, stats, lattice, rail_tints,
-                          label_offsets),
+                          label_offsets, nets),
             kitting_table(islands[name], wires, lattice)))
     law = ("full pipe = focused layer · translucent pipe = the other "
            "layer (KiCad-style; the focus radio flips which, the "
@@ -2545,7 +2757,12 @@ def render_html(islands, design=None, rules=None, panels=(), colours=None,
                      ("bot", "back (underside)"), ("label", "labels")))
     # KiCad-style right-hand dock: active-layer focus on top, then the
     # visibility checkboxes, then the wire-colour legend
-    dock = ('<div class="layers"><b>focus</b>'
+    views = "".join(
+        f'<label><input type="radio" name="view" value="{v}"'
+        f'{" checked" if v == "name" else ""}>{t}</label>'
+        for v, t in (("name", "pin names"), ("num", "pin numbers"),
+                     ("hole", "holes"), ("net", "nets")))
+    dock = ('<div class="layers"><b>view</b>' + views + '<b>focus</b>'
             '<label><input type="radio" name="actlyr" value="top" '
             'checked>front</label>'
             '<label><input type="radio" name="actlyr" value="bot">'
