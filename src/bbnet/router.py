@@ -425,7 +425,8 @@ class _IslandRouter:
             x = lat.x_of(f"rail:{ep.strip}")
             if getattr(ep, "row", 0):
                 return [(x, ep.row)], set()     # pinned at a height
-            return [(x, y) for y in range(1, lat.rows + 1)], set()
+            return [(x, y) for y in range(1, lat.rows + 1)
+                    if lat.board.has_rail_hole(y)], set()
         return [], set()
 
     def _airwire(self, kind, colour, label, a_cell, b_cell,

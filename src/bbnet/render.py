@@ -196,8 +196,15 @@ def _endpoint_px(px, ep, other_row=None):
         return px.col_x(col), px.y(ep.row)
     if isinstance(ep, RailAddr):
         row = getattr(ep, "row", 0) or other_row or 1
-        return px.col_x(f"rail:{ep.strip}"), px.y(row)
+        return px.col_x(f"rail:{ep.strip}"), _rail_y(px, row)
     return None
+
+
+def _rail_y(px, row):
+    """y of the rail hole numbered with `row`: a half-size board's rail
+    holes sit a fraction of a pitch below the main grid."""
+    off = getattr(px.lat.board, "rail_offset", 0.0)
+    return round(px.y(row) + off * CELL, 1)
 
 
 def _wire_points(px, wire):
@@ -674,7 +681,11 @@ def _rail_marker(add, px, island, strip, row, rail_tints):
     net = island.rails.get(strip, "")
     tint = rail_tints.get(net, "#999")
     x = px.col_x(f"rail:{strip}")
-    y = px.y(row)
+    y = _rail_y(px, row)
+    if y != px.y(row):
+        # the wire arrives on its row; the hole is a little lower
+        add(f'<line x1="{x}" y1="{px.y(row)}" x2="{x}" y2="{y}" '
+            f'stroke="{tint}" stroke-width="2"/>')
     add(f'<rect x="{x-RAIL_W/2+1.5}" y="{y-2.4}" width="{RAIL_W-3}" '
         f'height="4.8" rx="2.4" fill="{tint}"><title>lands on the '
         f'{esc(strip)} strip ({esc(net)})</title></rect>')
@@ -738,6 +749,12 @@ def _rail_bands(add, px, island, lattice, rail_tints):
         add(f'<rect x="{x-RAIL_W/2}" y="{HEAD-4}" width="{RAIL_W}" '
             f'height="{lattice.rows*CELL+8}" rx="4" fill="{tint}" '
             f'fill-opacity="0.13" stroke="{tint}" stroke-opacity="0.6"/>')
+        # the strip's own holes, so its gaps and its offset from the
+        # main rows show on the sheet
+        for rr in range(1, lattice.rows + 1):
+            if island.board.has_rail_hole(rr):
+                add(f'<circle cx="{x}" cy="{_rail_y(px, rr)}" r="1.4" '
+                    f'fill="{tint}" fill-opacity="0.55"/>')
         add(f'<text x="{x}" y="{HDR_RAIL[lane]}" class="rail" '
             f'fill="{tint}" text-anchor="middle">{esc(strip)}</text>')
         add(f'<text x="{x}" y="{px.height+FTR_RAIL[lane]}" class="rail" '

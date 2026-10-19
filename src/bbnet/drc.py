@@ -2,7 +2,9 @@
 """drc.py — bbnet design-rule checks over a derived Design.
 
 Rules (each encodes a real breadboard bug class):
-  B1 occupancy     two legs in one hole; >5 members on a half-row
+  B1 occupancy     two legs in one hole; >5 members on a half-row; a
+                   rail landing at a row with no rail hole (the gaps
+                   between a half-size board's groups of five)
   B2 rail-short    one net carrying two rail names; split-rail assertions
   B3 signal-short  one net seeded with two pinmap signals (unless tied)
   B4 floating      must-connect pin alone on its node
@@ -269,8 +271,45 @@ def rule_requirements(design, rules, colours):
     return violations, todos
 
 
+def _rail_gap_landings(design):
+    """(island, strip, row, what) for every rail endpoint pinned to a
+    row whose rail has no hole there."""
+    out = []
+    for iname in sorted(design.islands):
+        isl = design.islands[iname]
+        eps = []
+        for j in isl.jumpers + isl.interlinks:
+            eps += [(j.a, f"wire {j.a} -> {j.b}"), (j.b, f"wire {j.a} -> {j.b}")]
+        for q in isl.passives:
+            eps += [(q.a, q.ref), (q.b, q.ref)]
+        for w in isl.leads:
+            eps.append((w.at, f"lead {w.label or w.net or w.colour}"))
+        for ep, what in eps:
+            if isinstance(ep, XIsland):
+                tgt = design.islands.get(ep.island)
+                if tgt is None:
+                    continue
+                try:
+                    ep = parse_local(ep.text, tgt.name, tgt.board,
+                                     tgt.rails)
+                except Exception:
+                    continue
+            if not isinstance(ep, RailAddr) or not getattr(ep, "row", 0):
+                continue
+            board = design.islands[ep.island].board
+            if not board.has_rail_hole(ep.row):
+                out.append((ep.island, ep.strip, ep.row, what))
+    return out
+
+
 def rule_occupancy(design, rules, colours):
     out = []
+    for isl, strip, row, what in _rail_gap_landings(design):
+        out.append(Violation(
+            "occupancy", "error",
+            f"{isl}:rail:{strip}@{row}: {what} lands in a gap in the "
+            f"rail - there is no rail hole beside row {row}; use a row "
+            f"next to it"))
     for hk, occ in sorted(design.hole_members.items()):
         if len(occ) > 1:
             isl, row, half, hole = hk
@@ -441,6 +480,13 @@ def rule_pinmap_xcheck(design, rules, colours):
 PASSIVE_MIN_SPAN = {"resistor": 2.2, "ceramic": 1.4}
 
 
+def _span_end(ep):
+    if isinstance(ep, RailAddr):
+        at = f"@{ep.row}" if getattr(ep, "row", 0) else ""
+        return f"rail:{ep.strip}{at}"
+    return f"{ep.row}{ep.hole}"
+
+
 def rule_passive_span(design, rules, colours):
     spans = dict(PASSIVE_MIN_SPAN)
     spans.update(rules.get("passive_min_span") or {})
@@ -451,17 +497,18 @@ def rule_passive_span(design, rules, colours):
             need = spans.get(q.kind)
             if need is None or f"{isl.name}:{q.ref}" in waived:
                 continue
-            if not (isinstance(q.a, HoleAddr) and q.a.hole
-                    and isinstance(q.b, HoleAddr) and q.b.hole):
+            # a leg on a rail counts too, once its row is pinned: a
+            # 10u can across two side-by-side rail holes is 0.1" long
+            pa, pb = _passive_xy(q.a, q.b), _passive_xy(q.b, q.a)
+            if pa is None or pb is None:
                 continue
-            dr = abs(q.a.row - q.b.row)
-            dc = abs(HOLE_TENTHS[q.a.hole] - HOLE_TENTHS[q.b.hole])
+            dc, dr = abs(pa[0] - pb[0]), abs(pa[1] - pb[1])
             span = (dr * dr + dc * dc) ** 0.5
             if span < need:
                 out.append(Violation(
                     "passive-span", "error",
                     f"{isl.name}: {q.ref} {q.value} "
-                    f"{q.a.row}{q.a.hole}->{q.b.row}{q.b.hole}: span "
+                    f"{_span_end(q.a)}->{_span_end(q.b)}: span "
                     f"{span:.2f} (x0.1in) is tighter than a {q.kind}'s "
                     f"leads can bend (min {need}) — go 'down 1 over 2', "
                     "one diagonal, or land a leg on a rail"))
