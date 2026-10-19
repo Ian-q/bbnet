@@ -36,13 +36,29 @@ class Board:
     # may cover these rows, and no wire may cross the ravine at them,
     # on either layer.
     ravine_keepouts: frozenset = frozenset()
+    # Rows that have a rail hole beside them, or None for every row. A
+    # half-size board's rails come in groups of five holes with a blank
+    # between groups, so some rows have no rail hole level with them at
+    # all: nothing can land on the rail there.
+    rail_rows: frozenset | None = None
+    # How far (in rows) a rail hole sits below the main row it is
+    # numbered with. The half-size rails are not on the main grid: each
+    # hole sits about 0.4 of a pitch lower than its row. Render only.
+    rail_offset: float = 0.0
+
+    def has_rail_hole(self, row):
+        return self.rail_rows is None or row in self.rail_rows
 
 
 BOARDS = {
     "full-830": Board("full-830", 63, ("top+", "top-", "bot+", "bot-"), True,
                       frozenset({1, 2, 31, 32, 33, 62, 63})),
+    # rails: holes beside rows 1-5, 7-11, 13-17, 19-23, 25-29 (25 per
+    # strip), each ~0.4 row below its row; no hole at 6, 12, 18, 24, 30
     "half-400": Board("half-400", 30, ("top+", "top-", "bot+", "bot-"),
-                      False),
+                      False, rail_rows=frozenset(
+                          r for r in range(1, 30) if r % 6),
+                      rail_offset=0.4),
     "mini-170": Board("mini-170", 17, (), False),
 }
 

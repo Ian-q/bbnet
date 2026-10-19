@@ -172,14 +172,14 @@ own index):
 
 | Rule | Checks |
 |------|--------|
-| B1 occupancy | two legs in one hole; more than 5 members on a half-row |
+| B1 occupancy | two legs in one hole; more than 5 members on a half-row; a rail landing at a row with no rail hole (the half-size board's rail gaps, below) |
 | B2 rail-short | one net carrying two rail names; split-rail assertions |
 | B3 signal-short | one net seeded with two pinmap signals (unless tied) |
 | B4 floating | a must-connect pin alone on its node |
 | B5 requirements | declarative per-pin constraints (`rules.yaml`) — unmet ones double as the placement todo/BOM list |
 | B6 colour | jumper/lead colour vs. `colours.yaml` vocabulary + classes |
 | B7 pinmap-xcheck | bench placement vs. an external pin-allocation table |
-| B8 passive-span | a passive placed tighter than its leads can bend |
+| B8 passive-span | a passive placed tighter than its leads can bend, legs on rails included once their row is pinned |
 | B9 passive-overlap | two same-face passive bodies crossing or lying along each other; also a passive lying across a device (TO-92 etc.) or under a radial can |
 | B10 cap-polarity | electrolytics are polarized (`from` = "+" by convention); flags one reversed across GND and power |
 | B11 voltage-rating | a rated part across a known power net: error when the rail exceeds the rating, warning on thin derating |
@@ -191,6 +191,14 @@ own index):
 | B17 closed-by-default | a switched set closed with nothing driving it, tying two named rails together |
 | B18 wire obstruction | a wire body left lying over a hole with a leg in it, or across a passive body — the router prices both as *soft* costs and will pay them; this reports what it paid |
 | B19 off-board under body | an interlink or lead ending in a hole under a module's body (between a dip's pin rows, its `overhang:`, or a breakout's `body_cols:`): it cannot leave the board from there. Land it beside the body and jumper underneath. `underside: true` runs are exempt; on a `frozen:` (already built) island it is a warning |
+
+**Half-size rails.** On a `half-400` the rail holes come in five groups
+of five, with a blank between groups: there is no rail hole beside rows
+6, 12, 18, 24 or 30. Each rail hole also sits about 0.4 of a pitch below
+the row it is numbered with, so `rail:top+@13` is the hole just below
+row 13's line. The sheet draws the rail holes where they really are,
+B1 refuses a landing pinned to a gap row, and the router never picks
+one.
 
 B9 compares **level**, not just face: two bodies crossing at different
 heights is not a collision, it is what building upward is for.
