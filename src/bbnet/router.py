@@ -217,6 +217,10 @@ class _IslandRouter:
         self.solder_cells = set()
         self.body_cells = set()
         self.passive_cells = set()
+        # under a module's hovering body (footprint `overhang:`): priced
+        # like a passive body, but NOT an obstruction - a short jumper
+        # tucked under a socketed module is the intended fix for B19
+        self.overhang_cells = set()
         self.level_cells = {}      # level -> cells claimed at that level
 
         def occupy(ep):
@@ -241,7 +245,7 @@ class _IslandRouter:
             self.body_cells |= {(lat.x_of(h), r)
                                 for r, _half, h in body_cover(part)
                                 if r <= lat.rows}
-            self.passive_cells |= self._overhang_cells(part)
+            self.overhang_cells |= self._overhang_cells(part)
         for q in isl.passives:
             occupy(q.a)
             occupy(q.b)
@@ -667,7 +671,8 @@ class _IslandRouter:
                 if (nx, ny) in self.solder_cells \
                         and (nx, ny) not in wire.allowed:
                     cost += SOLDER_SOFT
-                if (nx, ny) in self.passive_cells:
+                if (nx, ny) in self.passive_cells \
+                        or (nx, ny) in self.overhang_cells:
                     cost += PASSIVE_SOFT
                 if nd >= 2 and lat.is_rail(nx):
                     cost += RAIL_RUN_SOFT   # vertical step in a rail

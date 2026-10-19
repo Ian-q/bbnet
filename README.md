@@ -190,6 +190,7 @@ own index):
 | B16 link stock | a bar cut longer than the stock it is cut from — a purchasing fact, so a warning |
 | B17 closed-by-default | a switched set closed with nothing driving it, tying two named rails together |
 | B18 wire obstruction | a wire body left lying over a hole with a leg in it, or across a passive body — the router prices both as *soft* costs and will pay them; this reports what it paid |
+| B19 off-board under body | an interlink or lead ending in a hole under a module's body (between a dip's pin rows, its `overhang:`, or a breakout's `body_cols:`): it cannot leave the board from there. Land it beside the body and jumper underneath. `underside: true` runs are exempt; on a `frozen:` (already built) island it is a warning |
 
 B9 compares **level**, not just face: two bodies crossing at different
 heights is not a collision, it is what building upward is for.
