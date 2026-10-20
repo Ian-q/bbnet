@@ -937,19 +937,6 @@ def island_from(d, parts_lib):
                     f"{name}.{ref}: body straddles the ravine over "
                     f"mounting-hole row(s) {hit} — move the part clear "
                     "of the screw keep-outs")
-        ties = []
-        for t in (p.get("internal_ties") or []):
-            if len(t) != 2:
-                raise ModelError(f"{name}.{ref}: internal tie {t!r} must be "
-                                 "a [pin, pin] pair")
-            ties.append(tuple(map(str, t)))
-        for ta, tb in ties:
-            if ta not in pins or tb not in pins:
-                raise ModelError(f"{name}.{ref}: internal tie {ta}-{tb} "
-                                 "names an unplaced pin")
-        seeds = dict((fp.seeds if fp else {}),
-                     **{str(k): str(v)
-                        for k, v in (p.get("seeds") or {}).items()})
         terms = {}
         if fp is not None and fp.terminals:
             for tn, (drow, col) in fp.terminals.items():
@@ -959,6 +946,19 @@ def island_from(d, parts_lib):
                         f"{name}.{ref}.{tn}: terminal lands on row {row}, "
                         f"off the {board.name} ({board.rows} rows)")
                 terms[tn] = TermAddr(name, ref, tn, row, col)
+        ties = []
+        for t in (p.get("internal_ties") or []):
+            if len(t) != 2:
+                raise ModelError(f"{name}.{ref}: internal tie {t!r} must be "
+                                 "a [pin, pin] pair")
+            ties.append(tuple(map(str, t)))
+        for ta, tb in ties:
+            if not ({ta, tb} <= set(pins) | set(terms)):
+                raise ModelError(f"{name}.{ref}: internal tie {ta}-{tb} "
+                                 "names an unplaced pin")
+        seeds = dict((fp.seeds if fp else {}),
+                     **{str(k): str(v)
+                        for k, v in (p.get("seeds") or {}).items()})
         parts.append(PlacedPart(ref, p.get("part"), str(p.get("value", "")),
                                 pins, fp, seeds, ties, anchor, terms))
 
@@ -1333,7 +1333,10 @@ def derive(islands, signals):
                     seeds_at.setdefault(key, []).append(
                         (part.seeds[tn], f"{part.ref}.{tn} seed", "part"))
             for ta, tb in part.internal_ties:
-                uf.union(part.pins[ta].node_key(), part.pins[tb].node_key())
+                # a tie may name a terminal: a module's screw-terminal
+                # ground is often the same plane as its header GND
+                uf.union((part.pins.get(ta) or part.terms[ta]).node_key(),
+                         (part.pins.get(tb) or part.terms[tb]).node_key())
         for j in isl.jumpers + isl.interlinks:
             a, b = resolve(j.a, isl), resolve(j.b, isl)
             ka = touch(a, f"wire→{b}")

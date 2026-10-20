@@ -268,6 +268,9 @@ seeds take the name like any pin (`seeds: {VIN-: GND}`), a lead lands with
 `at: CLK.VIN+`, and B19 never flags it, since sitting on the body is the
 point. The build sheet draws a small screw-terminal block there, its name
 running down the board beside it.
+`internal_ties:` may name terminals too - a module whose screw-terminal
+ground is the same plane as its header GND says `[[GND, VIN-]]`, or the
+terminal's ground is a second, unconnected net of the same name.
 
 A **radial** part (a can standing on its two legs) takes `dia:`, its
 body diameter in mm: `{ref: C1, kind: electrolytic, value: 100u, from:

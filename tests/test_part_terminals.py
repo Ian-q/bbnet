@@ -117,6 +117,18 @@ def test_bad_terminal_specs(bad, msg):
         model.parts_lib_from({"x": dict(CLICK, terminals=bad)})
 
 
+def test_an_internal_tie_can_join_a_terminal_to_a_pin():
+    # a Click's screw-terminal ground is the same plane as its header GND
+    def edit(raw):
+        clk = next(p for p in raw["demo-left"]["parts"]
+                   if p["ref"] == "CLK")
+        clk["internal_ties"] = [["GND", "VIN-"], ["GND", "VOUT-"]]
+    _i, d = _design(edit)
+    assert (d.pin_nid[("CLK", "GND")] == d.pin_nid[("CLK", "VIN-")]
+            == d.pin_nid[("CLK", "VOUT-")])
+    assert d.pin_nid[("CLK", "VIN+")] != d.pin_nid[("CLK", "GND")]
+
+
 def test_an_interlink_can_land_on_a_terminal():
     def edit(raw):
         raw["demo-right"].setdefault("interlinks", []).append(
