@@ -19,6 +19,7 @@ board per page with checkbox kitting tables for the bench.
 from __future__ import annotations
 
 import html
+import json
 import re
 import zlib
 
@@ -1995,10 +1996,56 @@ def render_rail(rail, islands, routed, rail_tints):
                  f'{-90 if side == "top" else 90} {round(X, 1)} '
                  f'{round(end, 1)})">{esc(_fit_label(far, 88)[0])}</text>'
                  '</g>')
+    S.extend(_asm_bundle_handles(links, spans, lane_top, lane_bot, lane_y,
+                                 [b["name"] for b in boards]))
     svg = (f'<svg viewBox="0 0 {width} {height}" width="{width}" '
            f'height="{height}" xmlns="http://www.w3.org/2000/svg">'
            + "\n".join(S) + "</svg>")
     return svg, links, stubs
+
+
+def _asm_bundle_handles(links, spans, lane_top, lane_bot, lane_y, names):
+    """One clickable tag per bundle of two or more wires: click it and
+    every wire between that pair of boards lights up - both halves on
+    the boards and the run in the channel, here and on the upright
+    sheets - so a whole harness can be laid in one go. Clicking a single
+    wire afterwards narrows to that wire, as before.
+
+    The tag sits on the bundle's largest block, centred on it."""
+    by_pair = {}
+    for k, ((ia, wa), (ib, wb)) in links.items():
+        by_pair.setdefault((min(ia, ib), max(ia, ib)), []).append(
+            (k, wa, wb))
+    out = []
+    for pair, members in sorted(by_pair.items()):
+        if len(members) < 2:
+            continue
+        keys = sorted({w.key for _k, wa, wb in members for w in (wa, wb)})
+        blocks = {}
+        for side, lanes in (("top", lane_top), ("bot", lane_bot)):
+            for key, g, lo, hi in spans[side]:
+                if g[:2] == pair:
+                    blocks.setdefault((side, g), []).append(
+                        (lanes[key], lo, hi))
+        (side, _g), runs = max(blocks.items(),
+                               key=lambda kv: (len(kv[1]), kv[0][0]))
+        lo = min(r[1] for r in runs)
+        hi = max(r[2] for r in runs)
+        y = (lane_y(side, min(r[0] for r in runs))
+             + lane_y(side, max(r[0] for r in runs))) / 2
+        text = f"{names[pair[0]]} ↔ {names[pair[1]]} · {len(members)}"
+        w = round(len(text) * 4.9 + 10, 1)
+        x = round((lo + hi) / 2 - w / 2, 1)
+        out.append(
+            f'<g class="asm-bundle" data-ws="{esc(json.dumps(keys))}">'
+            f'<rect x="{x}" y="{round(y - 6.5, 1)}" width="{w}" '
+            'height="13" rx="6.5"/>'
+            f'<text x="{round(x + w / 2, 1)}" y="{round(y + 3, 1)}" '
+            f'text-anchor="middle">{esc(text)}</text>'
+            f'<title>select all {len(members)} wires between '
+            f'{esc(names[pair[0]])} and {esc(names[pair[1]])}; then '
+            'click one wire to narrow to it</title></g>')
+    return out
 
 
 def assembly_table(rail, links, stubs, routed):
@@ -2204,6 +2251,11 @@ details.help summary{cursor:pointer;color:#7a7263}
 .asm-name{font:600 12px ui-monospace,monospace;fill:#3b5b8c;cursor:pointer}
 .asm-name:hover{text-decoration:underline}
 .asm-stub{font:8px ui-monospace,monospace;fill:#6b6455}
+.asm-bundle{cursor:pointer}
+.asm-bundle rect{fill:#fffdf6;stroke:#6b6455;stroke-width:1}
+.asm-bundle text{font:8px ui-monospace,monospace;fill:#3d382d}
+.asm-bundle:hover rect,.asm-bundle.sel rect{fill:#fff3c4;stroke:#b58900;stroke-width:1.6}
+body.focus .asm-bundle:not(.sel){opacity:.45}
 h2 a.up{font:400 11px ui-monospace,monospace;margin-left:.6em;color:#3b5b8c}
 .island.stacked .split{display:none}
 .island.stacked .kit{position:static;max-height:none}
@@ -2541,6 +2593,27 @@ JS = """
   });
   let last = null;
   document.addEventListener('click', function (e) {
+    // a bundle tag selects every wire between two boards; a click on
+    // one wire then narrows to it (the normal path below)
+    const bt = e.target.closest('.asm-bundle');
+    if (bt) {
+      const ws = new Set(JSON.parse(bt.getAttribute('data-ws')));
+      const id = 'bundle:' + bt.getAttribute('data-ws');
+      document.querySelectorAll('.sel').forEach(
+        el => el.classList.remove('sel'));
+      if (id !== last) {
+        document.querySelectorAll('.wire, .krow').forEach(el => {
+          if (ws.has(el.getAttribute('data-w'))) el.classList.add('sel');
+        });
+        bt.classList.add('sel');
+        document.body.classList.add('focus');
+        last = id;
+      } else {
+        document.body.classList.remove('focus');
+        last = null;
+      }
+      return;
+    }
     const g = e.target.closest('.wire, .krow');
     const key = g ? g.getAttribute('data-w') : null;
     document.querySelectorAll('.sel').forEach(

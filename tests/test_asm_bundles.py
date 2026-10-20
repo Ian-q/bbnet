@@ -58,3 +58,25 @@ def test_the_demo_rail_still_draws_every_link():
     svg, links, _s = render.render_rail(rails[0], islands, routed, TINTS)
     for _k, ((_ia, wa), _b) in links.items():
         assert f'data-w="{wa.key}"' in svg
+
+
+class _W:
+    def __init__(self, key):
+        self.key = key
+
+
+def test_a_bundle_tag_selects_both_halves_of_every_wire():
+    links = {"x#0": ((0, _W("a0")), (1, _W("b0"))),
+             "x#1": ((0, _W("a1")), (1, _W("b1"))),
+             "y#0": ((0, _W("lone")), (2, _W("far")))}
+    spans = {"bot": [("x#0", (0, 1), 10, 60), ("x#1", (0, 1), 20, 50),
+                     ("y#0", (0, 2), 10, 200)], "top": []}
+    lanes = {"x#0": 7, "x#1": 0, "y#0": 23}
+    out = render._asm_bundle_handles(
+        links, spans, {}, lanes, lambda side, off: 100 + off,
+        ["ctl", "grp", "mon"])
+    assert len(out) == 1          # a single wire is no bundle
+    assert "ctl ↔ grp · 2" in out[0]
+    for k in ("a0", "b0", "a1", "b1"):
+        assert f"&quot;{k}&quot;" in out[0]
+    assert "lone" not in out[0]
