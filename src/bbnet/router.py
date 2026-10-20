@@ -413,6 +413,11 @@ class _IslandRouter:
             for part in self.isl.parts:
                 if part.ref == ep.ref and ep.pin in part.pins:
                     return self._terminal(part.pins[ep.pin])
+                if part.ref == ep.ref and ep.pin in part.terms:
+                    # an off-grid terminal on the body: a cell to draw
+                    # from, but no half-row - it is in no hole
+                    t = part.terms[ep.pin]
+                    return [(lat.x_of(t.hole), t.row)], set()
             return [], set()
         if isinstance(ep, HoleAddr):
             if ep.hole:

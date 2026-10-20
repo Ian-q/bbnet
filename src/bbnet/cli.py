@@ -159,7 +159,9 @@ def render_report(design, violations, todos):
                 continue
             members = []
             for k in keys:
-                loc = (f"{k[2]}{k[3]}" if k[0] == "row" else f"rail:{k[2]}")
+                loc = (f"{k[2]}{k[3]}" if k[0] == "row"
+                       else f"{k[2]}.{k[3]}" if k[0] == "term"
+                       else f"rail:{k[2]}")
                 occ = ", ".join(design.node_members.get(k, [])) or "—"
                 members.append(f"`{loc}` ({occ})")
             edges = [f"{e.ref} {e.kind} {e.value}".strip()

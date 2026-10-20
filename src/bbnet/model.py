@@ -195,6 +195,14 @@ class Footprint:
                                     # sockets). Soft keep-out only — the
                                     # body hovers, so wires beneath are
                                     # possible but discouraged
+    terminals: dict = field(default_factory=dict)
+                                    # name -> (row_offset, hole): off-grid
+                                    # connection points ON the body (screw
+                                    # terminals, solder pads) - not in any
+                                    # hole, each its own electrical node.
+                                    # row_offset counts from pin 1's row;
+                                    # hole is an absolute column letter
+
 
 
 def parts_lib_from(d):
@@ -229,11 +237,33 @@ def parts_lib_from(d):
                 raise ModelError(f"parts.{pid}: body_cols must be a non-zero "
                                  "int on a sil footprint (+ toward column "
                                  "j, - toward a)")
+        terms = {}
+        for tn, tspec in (spec.get("terminals") or {}).items():
+            tn = str(tn)
+            where = f"parts.{pid}.terminals.{tn}"
+            if not _TERM_NAME_RE.fullmatch(tn):
+                raise ModelError(f"{where}: a terminal name is letters, "
+                                 "digits, _ + and - (it is addressed as "
+                                 "REF.NAME)")
+            if tn in names:
+                raise ModelError(f"{where}: clashes with a pin of the "
+                                 "same name")
+            if not isinstance(tspec, dict):
+                raise ModelError(f"{where}: want {{row: <offset from pin "
+                                 "1's row>, col: <a-j>}}")
+            row, col = tspec.get("row"), str(tspec.get("col", ""))
+            if isinstance(row, bool) or not isinstance(row, int):
+                raise ModelError(f"{where}: row must be an int offset from "
+                                 f"pin 1's row, got {row!r}")
+            if col not in HOLE_TENTHS:
+                raise ModelError(f"{where}: col must be a hole column a-j, "
+                                 f"got {col!r}")
+            terms[tn] = (row, col)
         lib[pid] = Footprint(
             kind, names,
             {str(k): str(v) for k, v in (spec.get("seeds") or {}).items()},
             spec.get("pin_signals"), span, body_cols=body_cols or 0,
-            overhang=over)
+            overhang=over, terminals=terms)
     return lib
 
 
@@ -411,6 +441,25 @@ class XIsland:
         return f"{self.island}:{self.text}"
 
 
+@dataclass(frozen=True)
+class TermAddr:
+    """A placed part's off-grid terminal (footprint `terminals:`): a
+    screw terminal or pad on the part's body. Its own node - never the
+    hole under it, which a terminal does not touch. `row`/`hole` say
+    where it sits over the board, for drawing only."""
+    island: str
+    ref: str
+    name: str
+    row: int
+    hole: str
+
+    def node_key(self):
+        return ("term", self.island, self.ref, self.name)
+
+    def __str__(self):
+        return f"{self.island}:{self.ref}.{self.name}"
+
+
 @dataclass
 class PlacedPart:
     ref: str
@@ -422,6 +471,7 @@ class PlacedPart:
     internal_ties: list[tuple[str, str]]
     anchor: HoleAddr | None = None   # pin1 as written (keeps its hole
                                      # letter; landed pins are node-level)
+    terms: dict = field(default_factory=dict)   # name -> TermAddr
 
 
 @dataclass
@@ -784,6 +834,7 @@ def panels_from(d, island_names):
     return panels
 
 
+_TERM_NAME_RE = re.compile(r"[\w+\-]+")
 _PINREF_RE = re.compile(r"([A-Za-z_]\w*)\.([\w+\-]+)")
 _LOCAL_RE = re.compile(r"\d+[a-jLR]")
 
@@ -899,8 +950,17 @@ def island_from(d, parts_lib):
         seeds = dict((fp.seeds if fp else {}),
                      **{str(k): str(v)
                         for k, v in (p.get("seeds") or {}).items()})
+        terms = {}
+        if fp is not None and fp.terminals:
+            for tn, (drow, col) in fp.terminals.items():
+                row = anchor.row + drow
+                if not 1 <= row <= board.rows:
+                    raise ModelError(
+                        f"{name}.{ref}.{tn}: terminal lands on row {row}, "
+                        f"off the {board.name} ({board.rows} rows)")
+                terms[tn] = TermAddr(name, ref, tn, row, col)
         parts.append(PlacedPart(ref, p.get("part"), str(p.get("value", "")),
-                                pins, fp, seeds, ties, anchor))
+                                pins, fp, seeds, ties, anchor, terms))
 
     passives = []
     for q in d.get("passives") or []:
@@ -1171,11 +1231,21 @@ def derive(islands, signals):
                 raise ModelError(f"{isl.name}: unknown ref in {endpoint}")
             part = refs[endpoint.ref][1]
             addr = (part.addr_of(endpoint.pin) if isinstance(part, Device)
-                    else part.pins.get(endpoint.pin))
+                    else (part.pins.get(endpoint.pin)
+                          or part.terms.get(endpoint.pin)))
             if addr is None:
-                raise ModelError(f"{endpoint.ref} has no pin "
-                                 f"{endpoint.pin!r} placed")
+                have = (sorted(part.terms) if isinstance(part, PlacedPart)
+                        else [])
+                raise ModelError(
+                    f"{isl.name}: {endpoint.ref} has no pin or terminal "
+                    f"{endpoint.pin!r} placed"
+                    + (f" (terminals: {', '.join(have)})" if have else ""))
             return addr
+        if isinstance(endpoint, XIsland):
+            m = _PINREF_RE.fullmatch(endpoint.text)
+            if m and not _LOCAL_RE.fullmatch(endpoint.text) \
+                    and endpoint.island in islands:
+                return resolve(PinRef(m.group(1), m.group(2)), isl)
         if isinstance(endpoint, XIsland):
             target = islands.get(endpoint.island)
             if target is None:
@@ -1255,6 +1325,13 @@ def derive(islands, signals):
                     seeds_at.setdefault(key, []).append(
                         (signal_map(source)[(mcu, pn)],
                          f"{part.ref}.{pn} {source} {mcu}", "signal"))
+            # off-grid terminals: their own nodes, never a hole
+            for tn, ta in part.terms.items():
+                key = touch(ta, f"{part.ref}.{tn}")
+                pin_key[(part.ref, tn)] = key
+                if tn in part.seeds:
+                    seeds_at.setdefault(key, []).append(
+                        (part.seeds[tn], f"{part.ref}.{tn} seed", "part"))
             for ta, tb in part.internal_ties:
                 uf.union(part.pins[ta].node_key(), part.pins[tb].node_key())
         for j in isl.jumpers + isl.interlinks:
@@ -1338,6 +1415,7 @@ def derive(islands, signals):
         else:
             k = sorted(keys, key=str)[0]
             name = (f"N${k[1]}:{k[2]}{k[3]}" if k[0] == "row"
+                    else f"N${k[1]}:{k[2]}.{k[3]}" if k[0] == "term"
                     else f"N${k[1]}:rail:{k[2]}")
         nets.append(Net(nid, name, seeds, sorted(keys, key=str), [], [],
                         sorted(rail_s), sorted(sig_s)))
