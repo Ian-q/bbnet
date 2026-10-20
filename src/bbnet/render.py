@@ -1727,22 +1727,48 @@ def _asm_exit_side(wire, lattice):
     return "bot" if wire.path[-1].x <= lattice.x_of("edgeL") else "top"
 
 
-def _asm_pack(spans):
-    """Greedy interval packing: {key: lane}, lane 0 nearest the boards.
-    Shortest spans are placed first, so a short hop between neighbours
-    hugs the carriers and the long runs ride outside it - the order a
-    bundle is laid in, and the order with the fewest crossings."""
-    lanes, out = [], {}
-    for key, lo, hi in sorted(spans, key=lambda t: (t[2] - t[1], t[0])):
-        for i, used in enumerate(lanes):
-            if all(hi + 6 < a or lo - 6 > b for a, b in used):
-                used.append((lo, hi))
-                out[key] = i
+ASM_BUNDLE_GAP = 9   # extra px between two bundles in one channel
+ASM_JOG = 4          # px between drops that leave a board at one row
+ASM_STUB_JOG = 10    # ... when two of them are labelled stubs
+
+
+def _asm_bundle_pack(items):
+    """Pack channel runs as BUNDLES: {key: px offset from the first
+    lane}, plus the channel's depth in px.
+
+    `items` is [(key, group, lo, hi)]. Every run in one group - the wires
+    between one pair of boards - gets a block of adjacent lanes, so the
+    group is laid, labelled and traced as one harness, and blocks are
+    kept ASM_BUNDLE_GAP apart so one bundle never reads as part of the
+    next. Inside a block the shortest run hugs the boards (the order with
+    the fewest crossings). Blocks are placed shortest
+    first, each at the smallest depth that clears every block it
+    overlaps along the rail."""
+    groups = {}
+    for key, g, lo, hi in items:
+        groups.setdefault(g, []).append((key, lo, hi))
+    blocks = []
+    for g, runs in groups.items():
+        lo = min(r[1] for r in runs)
+        hi = max(r[2] for r in runs)
+        runs.sort(key=lambda r: (r[2] - r[1], r[0]))
+        blocks.append((hi - lo, str(g), lo, hi, runs))
+    blocks.sort(key=lambda b: (b[0], b[1]))
+    placed, out, depth = [], {}, 0.0
+    for _len, _g, lo, hi, runs in blocks:
+        h = len(runs) * ASM_LANE
+        near = sorted((y0, y1) for a, b, y0, y1 in placed
+                      if not (hi + 6 < a or lo - 6 > b))
+        y = 0.0
+        for y0, y1 in near:
+            if y + h + ASM_BUNDLE_GAP <= y0:
                 break
-        else:
-            lanes.append([(lo, hi)])
-            out[key] = len(lanes) - 1
-    return out, len(lanes)
+            y = max(y, y1 + ASM_BUNDLE_GAP)
+        placed.append((lo, hi, y, y + h))
+        for n, (key, _lo, _hi) in enumerate(runs):
+            out[key] = y + n * ASM_LANE
+        depth = max(depth, y + h)
+    return out, depth
 
 
 def render_rail(rail, islands, routed, rail_tints):
@@ -1815,23 +1841,26 @@ def render_rail(rail, islands, routed, rail_tints):
         sb = _asm_exit_side(wb, boards[ib]["lat"])
         xa, _ = at(ia, wa)
         xb, _ = at(ib, wb)
+        pair = (min(ia, ib), max(ia, ib))
         if sa == sb:
-            spans[sa].append((k, min(xa, xb), max(xa, xb)))
+            spans[sa].append((k, pair, min(xa, xb), max(xa, xb)))
             plan[k] = (sa, sb, None)
         else:
             gx = gap_x(ib, ia)
             gap_use.setdefault(round(gx, 1), []).append(k)
-            spans[sa].append((k + "#a", min(xa, gx), max(xa, gx)))
-            spans[sb].append((k + "#b", min(xb, gx), max(xb, gx)))
+            spans[sa].append((k + "#a", pair + ("a",), min(xa, gx),
+                              max(xa, gx)))
+            spans[sb].append((k + "#b", pair + ("b",), min(xb, gx),
+                              max(xb, gx)))
             plan[k] = (sa, sb, gx)
-    lane_top, n_top = _asm_pack(spans["top"])
-    lane_bot, n_bot = _asm_pack(spans["bot"])
+    lane_top, d_top = _asm_bundle_pack(spans["top"])
+    lane_bot, d_bot = _asm_bundle_pack(spans["bot"])
     # each side reserves stub room only for the stubs that leave by it,
     # so a channel rail carries no empty band on its quiet side
     stub_sides = {_asm_exit_side(w, boards[i]["lat"]) for i, w in stubs}
-    top_band = (ASM_CLEAR + max(n_top, 1) * ASM_LANE
+    top_band = (ASM_CLEAR + max(d_top, ASM_LANE)
                 + (96 if "top" in stub_sides else 0))
-    bot_band = (ASM_CLEAR + max(n_bot, 1) * ASM_LANE
+    bot_band = (ASM_CLEAR + max(d_bot, ASM_LANE)
                 + (96 if "bot" in stub_sides else 0))
     mid = ASM_NAME_H + top_band + tallest / 2     # the rail's centreline
 
@@ -1845,10 +1874,44 @@ def render_rail(rail, islands, routed, rail_tints):
         edge = Y0 if side == "top" else Y0 + b["h"]
         return X, Y, edge, side
 
-    def lane_y(side, lane):
+    def lane_y(side, off):
         if side == "top":
-            return mid - tallest / 2 - ASM_CLEAR - lane * ASM_LANE
-        return mid + tallest / 2 + ASM_CLEAR + lane * ASM_LANE
+            return mid - tallest / 2 - ASM_CLEAR - off
+        return mid + tallest / 2 + ASM_CLEAR + off
+
+    # Halves that leave one board at the same row would drop down the
+    # same line and hide each other (and a stub): spread them ASM_JOG
+    # apart with a short jog along the board's edge. Ordered by depth,
+    # so the run to the nearest lane takes the drop nearest the run.
+    drops = {}
+    for k, ((ia, wa), (ib, wb)) in links.items():
+        _sa, _sb, gx = plan[k]
+        for i, w, end in ((ia, wa, "a"), (ib, wb, "b")):
+            side = _asm_exit_side(w, boards[i]["lat"])
+            lk = k if gx is None else f"{k}#{end}"
+            off = (lane_top if side == "top" else lane_bot)[lk]
+            drops.setdefault((i, side, round(at(i, w)[0], 1)), []).append(
+                (off, w.key))
+    for i, w in stubs:
+        side = _asm_exit_side(w, boards[i]["lat"])
+        drops.setdefault((i, side, round(at(i, w)[0], 1)), []).append(
+            (1e9, w.key))
+    jog = {}
+    for (i, _side, _x), ds in drops.items():
+        ds.sort()
+        # two stubs carry two rotated labels side by side: give the text
+        # room, not just the wires
+        step = ASM_STUB_JOG if sum(o == 1e9 for o, _ in ds) > 1 \
+            else ASM_JOG
+        for j, (_o, wk) in enumerate(ds):
+            jog[(i, wk)] = (j - (len(ds) - 1) / 2) * step
+
+    def dropped(x, y, edge, side, dx):
+        """The exit, then a jog of dx along the edge if it needs one."""
+        if not dx:
+            return [(x, y)]
+        e = edge + (-2 if side == "top" else 2)
+        return [(x, y), (x, e), (x + dx, e)]
 
     height = round(ASM_NAME_H + top_band + tallest + bot_band, 1)
     width = round(width_core, 1)
@@ -1880,9 +1943,13 @@ def render_rail(rail, islands, routed, rail_tints):
         ax, ay, aedge, sa = place(ia, wa)
         bx, by, bedge, sb = place(ib, wb)
         _sa, _sb, gx = plan[k]
+        da, db = jog.get((ia, wa.key), 0), jog.get((ib, wb.key), 0)
+        head = dropped(ax, ay, aedge, sa, da)
+        tail = dropped(bx, by, bedge, sb, db)[::-1]
+        ax, bx = ax + da, bx + db
         if gx is None:
             ly = lane_y(sa, (lane_top if sa == "top" else lane_bot)[k])
-            pts = [(ax, ay), (ax, ly), (bx, ly), (bx, by)]
+            pts = head + [(ax, ly), (bx, ly)] + tail
         else:
             la = lane_y(sa, (lane_top if sa == "top" else
                              lane_bot)[k + "#a"])
@@ -1893,8 +1960,7 @@ def render_rail(rail, islands, routed, rail_tints):
             j = gap_seen.get(key, 0)
             gap_seen[key] = j + 1
             gxx = gx + (j - (n - 1) / 2) * min(ASM_LANE, rail.gap / max(n, 1))
-            pts = [(ax, ay), (ax, la), (gxx, la), (gxx, lb), (bx, lb),
-                   (bx, by)]
+            pts = head + [(ax, la), (gxx, la), (gxx, lb), (bx, lb)] + tail
         pts = [(round(p[0], 1), round(p[1], 1)) for p in pts]
         pts = [p for n_, p in enumerate(pts) if n_ == 0 or p != pts[n_ - 1]]
         under = wa.underside or wb.underside
@@ -1911,12 +1977,16 @@ def render_rail(rail, islands, routed, rail_tints):
         X, Y, edge, side = place(i, w)
         far = (w.label or "").split("→")[-1].strip() or "elsewhere"
         sgn = -1 if side == "top" else 1
-        end = edge + sgn * (ASM_CLEAR + (n_top if side == "top" else
-                                         n_bot) * ASM_LANE + 6)
+        end = edge + sgn * (ASM_CLEAR + (d_top if side == "top" else
+                                         d_bot) + 6)
         colour = WIRE_COLOURS.get(w.colour, WIRE_COLOURS[""])
+        dx = jog.get((i, w.key), 0)
+        d = " ".join(f"L{round(px_, 1)},{round(py_, 1)}" for px_, py_ in
+                     dropped(X, Y, edge, side, dx)[1:])
+        X += dx
         S.append(f'<g class="wire" data-w="{esc(w.key)}" '
                  'data-kind="interlink">'
-                 f'<path d="M{round(X, 1)},{round(Y, 1)} '
+                 f'<path d="M{round(X - dx, 1)},{round(Y, 1)} {d} '
                  f'L{round(X, 1)},{round(end, 1)}" stroke="{colour}" '
                  'stroke-width="3" stroke-dasharray="4 3" fill="none">'
                  f'<title>{esc(w.label)} (off this rail)</title></path>'
