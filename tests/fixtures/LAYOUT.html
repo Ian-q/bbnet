@@ -29,6 +29,11 @@ details.help summary{cursor:pointer;color:#7a7263}
 .asm-name{font:600 12px ui-monospace,monospace;fill:#3b5b8c;cursor:pointer}
 .asm-name:hover{text-decoration:underline}
 .asm-stub{font:8px ui-monospace,monospace;fill:#6b6455}
+.asm-bundle{cursor:pointer}
+.asm-bundle rect{fill:#fffdf6;stroke:#6b6455;stroke-width:1}
+.asm-bundle text{font:8px ui-monospace,monospace;fill:#3d382d}
+.asm-bundle:hover rect,.asm-bundle.sel rect{fill:#fff3c4;stroke:#b58900;stroke-width:1.6}
+body.focus .asm-bundle:not(.sel){opacity:.45}
 h2 a.up{font:400 11px ui-monospace,monospace;margin-left:.6em;color:#3b5b8c}
 .island.stacked .split{display:none}
 .island.stacked .kit{position:static;max-height:none}
@@ -3663,6 +3668,27 @@ svg [data-lbl].lbl-armed{cursor:move;
   });
   let last = null;
   document.addEventListener('click', function (e) {
+    // a bundle tag selects every wire between two boards; a click on
+    // one wire then narrows to it (the normal path below)
+    const bt = e.target.closest('.asm-bundle');
+    if (bt) {
+      const ws = new Set(JSON.parse(bt.getAttribute('data-ws')));
+      const id = 'bundle:' + bt.getAttribute('data-ws');
+      document.querySelectorAll('.sel').forEach(
+        el => el.classList.remove('sel'));
+      if (id !== last) {
+        document.querySelectorAll('.wire, .krow').forEach(el => {
+          if (ws.has(el.getAttribute('data-w'))) el.classList.add('sel');
+        });
+        bt.classList.add('sel');
+        document.body.classList.add('focus');
+        last = id;
+      } else {
+        document.body.classList.remove('focus');
+        last = null;
+      }
+      return;
+    }
     const g = e.target.closest('.wire, .krow');
     const key = g ? g.getAttribute('data-w') : null;
     document.querySelectorAll('.sel').forEach(
