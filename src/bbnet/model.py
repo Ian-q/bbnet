@@ -737,12 +737,18 @@ class Rail:
     a board of this rail leaves by that long edge (below = the column-a
     edge, above = the column-j edge), whatever panel the board is drawn
     in - so no wire zig-zags through the gap between two carriers.
-    Unset, each half keeps the panel-facing / nearest edge."""
+    Unset, each half keeps the panel-facing / nearest edge.
+
+    `split` (needs a channel) runs a duct on BOTH long edges: a wire
+    with both ends on this rail takes whichever edge is nearer its two
+    ends, so a run between two column-a pins stays below instead of
+    flying across both boards. Wires to other rails keep `channel`."""
     name: str
     islands: list[str]
     gap: int = DEFAULT_RAIL_GAP_PX
     note: str = ""
     channel: str | None = None
+    split: bool = False
 
     @property
     def exit_side(self):
@@ -790,8 +796,15 @@ def rails_from(d, island_names):
         if channel is not None and channel not in ("below", "above"):
             raise ModelError(f"layout.yaml rail {name!r}: channel must be "
                              f"'below' or 'above', got {channel!r}")
+        split = r.get("split", False)
+        if not isinstance(split, bool):
+            raise ModelError(f"layout.yaml rail {name!r}: split must be "
+                             f"true or false, got {split!r}")
+        if split and channel is None:
+            raise ModelError(f"layout.yaml rail {name!r}: split needs a "
+                             "channel: (the duct for wires to other rails)")
         rails.append(Rail(name, members, gap, str(r.get("note", "")),
-                          channel))
+                          channel, split))
     return rails
 
 
