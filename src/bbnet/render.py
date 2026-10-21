@@ -1731,6 +1731,46 @@ def _asm_exit_side(wire, lattice):
 ASM_BUNDLE_GAP = 9   # extra px between two bundles in one channel
 ASM_JOG = 4          # px between drops that leave a board at one row
 ASM_STUB_JOG = 10    # ... when two of them are labelled stubs
+ASM_STUB_TEXT = 120  # px of rotated text on a stub (~22 characters)
+
+
+def _asm_spread(items, gap):
+    """[(x, x0, key)] sorted by x -> the same with x moved so that no
+    two are closer than `gap`: crowded runs are laid out evenly around
+    their own mean, merging with a neighbour run when they would touch."""
+    runs = []
+    for it in items:
+        runs.append([it])
+        while len(runs) > 1:
+            a, b = runs[-2], runs[-1]
+            if _run_pos(a, gap)[-1] + gap <= _run_pos(b, gap)[0]:
+                break
+            runs[-2:] = [a + b]
+    out = []
+    for run in runs:
+        out.extend((x, x0, k) for x, (_x, x0, k) in
+                   zip(_run_pos(run, gap), run))
+    return out
+
+
+def _run_pos(run, gap):
+    """Evenly spaced positions for one run, centred on its mean."""
+    if len(run) == 1:
+        return [run[0][0]]
+    mid = sum(x for x, _x0, _k in run) / len(run)
+    return [mid + (j - (len(run) - 1) / 2) * gap for j in range(len(run))]
+
+
+def _lead_dest(label):
+    """What a lead's stub says: where it GOES. The router labels a lead
+    `<hole> · <the YAML label>`; drop the hole, and a leading `NET -> `
+    (the net is already the wire's colour and hover), so
+    `1a · 3V3 -> AD hat 1 header 3V3` reads `AD hat 1 header 3V3`."""
+    text = (label or "").split(" · ", 1)[-1].strip()
+    head, sep, rest = text.partition(" -> ")
+    if sep and head and " " not in head and rest.strip():
+        return rest.strip()
+    return text or "off-board"
 
 
 def _asm_bundle_pack(items):
@@ -1803,6 +1843,10 @@ def render_rail(rail, islands, routed, rail_tints):
             if w.kind != "interlink" or not w.link:
                 continue
             halves.setdefault(w.link, {})[w.link_end] = (i, w)
+    # leads leave the rail altogether (to a hat, a sensor, a cable):
+    # they get the same labelled stub, saying where they go
+    leads = [(i, w) for i, b in enumerate(boards) for w in b["wires"]
+             if w.kind == "lead" and w.path]
     links = {}
     for k, v in sorted(halves.items()):
         if "a" in v and "b" in v:
@@ -1858,11 +1902,12 @@ def render_rail(rail, islands, routed, rail_tints):
     lane_bot, d_bot = _asm_bundle_pack(spans["bot"])
     # each side reserves stub room only for the stubs that leave by it,
     # so a channel rail carries no empty band on its quiet side
-    stub_sides = {_asm_exit_side(w, boards[i]["lat"]) for i, w in stubs}
+    stub_sides = {_asm_exit_side(w, boards[i]["lat"])
+                  for i, w in stubs + leads}
     top_band = (ASM_CLEAR + max(d_top, ASM_LANE)
-                + (96 if "top" in stub_sides else 0))
+                + (ASM_STUB_TEXT + 8 if "top" in stub_sides else 0))
     bot_band = (ASM_CLEAR + max(d_bot, ASM_LANE)
-                + (96 if "bot" in stub_sides else 0))
+                + (ASM_STUB_TEXT + 8 if "bot" in stub_sides else 0))
     mid = ASM_NAME_H + top_band + tallest / 2     # the rail's centreline
 
     def place(i, wire):
@@ -1893,7 +1938,7 @@ def render_rail(rail, islands, routed, rail_tints):
             off = (lane_top if side == "top" else lane_bot)[lk]
             drops.setdefault((i, side, round(at(i, w)[0], 1)), []).append(
                 (off, w.key))
-    for i, w in stubs:
+    for i, w in stubs + leads:
         side = _asm_exit_side(w, boards[i]["lat"])
         drops.setdefault((i, side, round(at(i, w)[0], 1)), []).append(
             (1e9, w.key))
@@ -1906,6 +1951,20 @@ def render_rail(rail, islands, routed, rail_tints):
             else ASM_JOG
         for j, (_o, wk) in enumerate(ds):
             jog[(i, wk)] = (j - (len(ds) - 1) / 2) * step
+
+    # Stubs on adjacent rows are only a row apart, closer than two
+    # rotated labels need: spread every stub on one board edge to at
+    # least ASM_STUB_JOG, each run of crowded ones centred where they
+    # leave, order kept.
+    edges = {}
+    for i, w in stubs + leads:
+        side = _asm_exit_side(w, boards[i]["lat"])
+        x0 = at(i, w)[0]
+        edges.setdefault((i, side), []).append(
+            (x0 + jog.get((i, w.key), 0), x0, w.key))
+    for (i, _side), items in edges.items():
+        for (x, x0, wk) in _asm_spread(sorted(items), ASM_STUB_JOG):
+            jog[(i, wk)] = x - x0
 
     def dropped(x, y, edge, side, dx):
         """The exit, then a jog of dx along the edge if it needs one."""
@@ -1974,9 +2033,12 @@ def render_rail(rail, islands, routed, rail_tints):
                                                   WIRE_COLOURS[""]),
                             under, title, wa.key))
 
-    for i, w in stubs:
+    for i, w in stubs + leads:
         X, Y, edge, side = place(i, w)
-        far = (w.label or "").split("→")[-1].strip() or "elsewhere"
+        if w.kind == "lead":
+            far = _lead_dest(w.label)
+        else:
+            far = (w.label or "").split("→")[-1].strip() or "elsewhere"
         sgn = -1 if side == "top" else 1
         end = edge + sgn * (ASM_CLEAR + (d_top if side == "top" else
                                          d_bot) + 6)
@@ -1986,15 +2048,17 @@ def render_rail(rail, islands, routed, rail_tints):
                      dropped(X, Y, edge, side, dx)[1:])
         X += dx
         S.append(f'<g class="wire" data-w="{esc(w.key)}" '
-                 'data-kind="interlink">'
+                 f'data-kind="{esc(w.kind)}">'
                  f'<path d="M{round(X - dx, 1)},{round(Y, 1)} {d} '
                  f'L{round(X, 1)},{round(end, 1)}" stroke="{colour}" '
                  'stroke-width="3" stroke-dasharray="4 3" fill="none">'
-                 f'<title>{esc(w.label)} (off this rail)</title></path>'
+                 f'<title>{esc(w.label)} ('
+                 + ("off-board lead" if w.kind == "lead" else
+                    "off this rail") + ')</title></path>'
                  f'<text class="asm-stub" x="{round(X + 3, 1)}" '
                  f'y="{round(end, 1)}" transform="rotate('
                  f'{-90 if side == "top" else 90} {round(X, 1)} '
-                 f'{round(end, 1)})">{esc(_fit_label(far, 88)[0])}</text>'
+                 f'{round(end, 1)})">{esc(_fit_label(far, ASM_STUB_TEXT)[0])}</text>'
                  '</g>')
     S.extend(_asm_bundle_handles(links, spans, lane_top, lane_bot, lane_y,
                                  [b["name"] for b in boards]))
