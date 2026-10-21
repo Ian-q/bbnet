@@ -149,3 +149,12 @@ def test_bad_split_is_rejected(rail, msg):
     with pytest.raises(model.ModelError, match=msg):
         model.rails_from({"rails": [dict(name="x", islands=["demo-left"],
                                          **rail)]}, {"demo-left"})
+
+
+def test_a_stub_names_the_far_end_not_just_its_board():
+    """The receiving half's label says WHICH hole or terminal on the far
+    board, the way the declaring half's `⇒ board:addr` already does."""
+    _i, _p, _r, routed = _route(None)
+    labels = {w.label for w in routed["demo-right"][0]
+              if w.kind == "interlink"}
+    assert "15a ⇐ demo-left:15j" in labels

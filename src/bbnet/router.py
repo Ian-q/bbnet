@@ -178,7 +178,8 @@ def _local(addr):
     if isinstance(addr, HoleAddr):
         return f"{addr.row}{addr.hole or addr.half}"
     if isinstance(addr, RailAddr):
-        return f"rail:{addr.strip}"
+        row = getattr(addr, "row", 0)
+        return f"rail:{addr.strip}" + (f"@{row}" if row else "")
     return str(addr)
 
 
@@ -496,13 +497,13 @@ class _IslandRouter:
                 check(j.a, "interlink", f"{_local(j.a)} ⇒ {j.b}")
         for w in self.isl.leads:
             check(w.at, "lead", f"{_local(w.at)} · {w.label}")
-        for origin, text, _c, _p, _n, _u, _link in remote_stubs:
+        for origin, text, _c, _p, _n, _u, _link, far in remote_stubs:
             try:
                 ep = parse_local(text, self.isl.name, self.isl.board,
                                  self.isl.rails)
             except Exception:
                 continue
-            check(ep, "interlink", f"{_local(ep)} ⇐ {origin}")
+            check(ep, "interlink", f"{_local(ep)} ⇐ {origin}:{far}")
         return out
 
     def _collect_wires(self, remote_stubs):
@@ -560,7 +561,8 @@ class _IslandRouter:
             self._flywire("interlink", j.colour, label, a, side, link, "a",
                           anchor=_local(j.a))
 
-        for origin, text, colour, pair, nid, under, link in remote_stubs:
+        for origin, text, colour, pair, nid, under, link, far in \
+                remote_stubs:
             try:
                 ep = parse_local(text, self.isl.name, self.isl.board,
                                  self.isl.rails)
@@ -571,7 +573,10 @@ class _IslandRouter:
                 continue
             side = (self.link_side.get(link) or self.rail_side
                     or self.pair_side.get(origin))
-            label = f"{_local(ep)} ⇐ {origin}"
+            # name the far END, not just its board: `2b ⇐ pwr-dist:
+            # DIST.V1-` says which screw, the way the near half's
+            # `⇒ teensy-pwr:2b` already does
+            label = f"{_local(ep)} ⇐ {origin}:{far}"
             if under:
                 ex = self.lat.x_of("edgeR" if side != "L" else "edgeL")
                 self._airwire("interlink", colour, label,
@@ -965,7 +970,7 @@ def route_design(islands: dict, design=None, rules=None, panels=(),
                     (isl.name, j.b.text, j.colour, j.pair,
                      ctx.nid_of(isl.name, j.a),
                      getattr(j, "underside", False),
-                     f"{isl.name}#{idx}"))
+                     f"{isl.name}#{idx}", _local(j.a)))
     out = {}
     for name in sorted(islands):
         r = _IslandRouter(islands[name], sorted(
