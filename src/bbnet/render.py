@@ -1067,8 +1067,41 @@ def _parts(add, px, island, nets=None):
         midx, midy = (x0 + x1) / 2, (y0 + y1) / 2
         add(f'<text x="{midx}" y="{midy}" class="pref" text-anchor="middle" '
             f'transform="rotate(90 {midx} {midy})">{esc(part.ref)}</text>')
+        _terminals(add, px, part, nets)
         add('</g>')
     return deferred
+
+
+def _terminals(add, px, part, nets):
+    """A part's off-grid terminals (footprint `terminals:`): a small
+    screw-terminal block on the body at each one, its name running down
+    the board beside it (rotated, so neighbours one column apart never
+    collide). Not a hole - the block sits on the part, the hole under it
+    stays as it was."""
+    for tn, t in sorted(getattr(part, "terms", {}).items()):
+        cx, cy = px.col_x(t.hole), px.y(t.row)
+        net = nets.pin_net(part.ref, tn) if nets is not None else None
+        title = f"{part.ref}.{tn}: terminal on the body (not a hole)"
+        if net is not None:
+            title += f" - net {net.name}"
+            add(f'<g class="lyr-net"><rect class="net" data-net="{net.nid}" '
+                f'x="{cx - 7}" y="{cy - 6}" width="14" height="12" rx="2" '
+                f'fill="{nets.colour(net)}"><title>{esc(net.name)}</title>'
+                '</rect></g>')
+        add(f'<g class="term"><title>{esc(title)}</title>'
+            f'<rect x="{cx - 6}" y="{cy - 5}" width="12" height="10" '
+            f'rx="1.5" fill="#e8902a" stroke="#8a4f0c" stroke-width="1"/>'
+            f'<circle cx="{cx}" cy="{cy}" r="3" fill="#cfd8dc" '
+            f'stroke="#455a64" stroke-width="0.8"/>'
+            f'<line x1="{cx - 2.2}" y1="{cy + 2.2}" x2="{cx + 2.2}" '
+            f'y2="{cy - 2.2}" stroke="#455a64" stroke-width="0.9"/></g>')
+        v = {"name": tn, "hole": tn}
+        if net is not None:
+            v["net"] = _net_label(net, 10)
+        ty = cy + 8
+        add(f'<text x="{cx}" y="{ty}" class="pin halo" '
+            f'transform="rotate(90 {cx} {ty})" dy="3">'
+            f'{_vspans(v)}</text>')
 
 
 # Diodes and LEDs: `from` is the ANODE, `to` the CATHODE - the band

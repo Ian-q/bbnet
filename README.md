@@ -162,6 +162,9 @@ is built on exactly that.
   to a row height (geometry only).
 - `U1.29` — pin sugar: a part ref plus pin name, resolved through that
   part's placement.
+- `CLK.VIN+` — the same form names an off-grid **terminal** on a part's
+  body (footprint `terminals:`, below). It is its own node, never the hole
+  beneath it. `charger-click:CLK.VIN+` reaches one from another board.
 - `gps-imu:4L` — a cross-island address (`<island>:<local address>`),
   for a lead or jumper that lands on another board.
 
@@ -238,6 +241,36 @@ A **module lying flat beside its header** (an INA226-class breakout on
 a right-angle header) declares it on its footprint: `body_cols: 2` buries
 the two hole columns toward column j on every pin row (`-2` toward
 column a). The buried holes get the same treatment as a can's below.
+
+A part with **connection points on its body that are not in any hole**
+(a Click's screw terminals, a module's solder pads) declares them on its
+footprint as `terminals:`, each at a row offset from pin 1's row and an
+absolute hole column, which say where it sits over the board:
+
+```yaml
+buckboost-click:
+  kind: dip
+  span: 9
+  overhang: [1, 15]
+  pins: [GND_R, V5V, SDA, SCL, TX, RX, INT, PWM,
+         AN, RST, CS, SCK, POCI, PICO, V3V3, GND_L]
+  terminals:
+    VIN+:  {row: 20, col: c}     # pin1 at 1b -> over 21c
+    VIN-:  {row: 20, col: d}
+    VOUT-: {row: 20, col: g}
+    VOUT+: {row: 20, col: h}
+```
+
+Each terminal is **its own node**, keyed by part and name: two terminals
+over one row are not shorted through the strip beneath, and the hole under
+each is untouched (B1 does not count it). Address one as `REF.NAME` -
+seeds take the name like any pin (`seeds: {VIN-: GND}`), a lead lands with
+`at: CLK.VIN+`, and B19 never flags it, since sitting on the body is the
+point. The build sheet draws a small screw-terminal block there, its name
+running down the board beside it.
+`internal_ties:` may name terminals too - a module whose screw-terminal
+ground is the same plane as its header GND says `[[GND, VIN-]]`, or the
+terminal's ground is a second, unconnected net of the same name.
 
 A **radial** part (a can standing on its two legs) takes `dia:`, its
 body diameter in mm: `{ref: C1, kind: electrolytic, value: 100u, from:

@@ -221,7 +221,7 @@ def _pin_reqs(design, rules):
     placed = {}
     for isl in design.islands.values():
         for part in isl.parts:
-            placed[part.ref] = list(part.pins)
+            placed[part.ref] = list(part.pins) + list(part.terms)
         for dv in isl.devices:
             placed[dv.ref] = [t.name for t in dv.terminals]
     for key, reqs in (rules.get("pins") or {}).items():
