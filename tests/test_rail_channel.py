@@ -89,3 +89,63 @@ def test_channel_maps_to_an_upright_edge():
     assert model.Rail("x", ["a"], channel="below").exit_side == "L"
     assert model.Rail("x", ["a"], channel="above").exit_side == "R"
     assert model.Rail("x", ["a"]).exit_side is None
+
+
+# ---- split: a duct on both edges ----------------------------------------
+
+def _route_split(channel, frm, to, split=True):
+    parts = model.parts_lib_from(bbnet._yaml(FIXTURES / "parts.yaml"))
+    raw = {p.stem: bbnet._yaml(p) for p in FIXTURES.glob("demo-*.yaml")}
+    raw["demo-left"]["interlinks"][0].update(
+        {"from": frm, "to": f"demo-right:{to}"})
+    islands = {d["island"]: model.island_from(d, parts)
+               for d in raw.values()}
+    design = model.derive(islands, registry())
+    layout = bbnet._yaml(FIXTURES / "layout.yaml")
+    layout["rails"][0].update({"channel": channel, "split": split})
+    rails = model.rails_from(layout, set(islands))
+    return render.route_design(islands, design, {}, (), rails)
+
+
+@pytest.mark.parametrize("channel, frm, to, side", [
+    ("above", "15b", "15a", "L"),    # both ends near column a: below
+    ("below", "15i", "15j", "R"),    # both near column j: above
+    ("below", "15j", "15a", "L"),    # a tie keeps the rail's channel
+    ("above", "15j", "15a", "R"),
+])
+def test_a_split_rail_takes_the_nearer_duct(channel, frm, to, side):
+    assert set(_halves(_route_split(channel, frm, to)).values()) == {side}
+
+
+def test_without_split_the_channel_still_wins():
+    halves = _halves(_route_split("above", "15b", "15a", split=False))
+    assert set(halves.values()) == {"R"}
+
+
+def test_split_never_moves_a_wire_to_another_rail():
+    """Only wires with both ends on the split rail choose a side: one to
+    a board on no rail (or another rail) keeps the rail's channel."""
+    parts = model.parts_lib_from(bbnet._yaml(FIXTURES / "parts.yaml"))
+    raw = {p.stem: bbnet._yaml(p) for p in FIXTURES.glob("demo-*.yaml")}
+    raw["demo-left"]["interlinks"][0].update(
+        {"from": "15b", "to": "demo-right:15a"})
+    islands = {d["island"]: model.island_from(d, parts)
+               for d in raw.values()}
+    design = model.derive(islands, registry())
+    rails = model.rails_from({"rails": [
+        {"name": "one", "islands": ["demo-left"], "channel": "above",
+         "split": True},
+        {"name": "two", "islands": ["demo-right"], "channel": "above"}]},
+        set(islands))
+    routed = render.route_design(islands, design, {}, (), rails)
+    assert set(_halves(routed).values()) == {"R"}
+
+
+@pytest.mark.parametrize("rail, msg", [
+    ({"split": "yes", "channel": "above"}, "split must be"),
+    ({"split": True}, "split needs a channel"),
+])
+def test_bad_split_is_rejected(rail, msg):
+    with pytest.raises(model.ModelError, match=msg):
+        model.rails_from({"rails": [dict(name="x", islands=["demo-left"],
+                                         **rail)]}, {"demo-left"})
