@@ -80,3 +80,31 @@ def test_a_bundle_tag_selects_both_halves_of_every_wire():
     for k in ("a0", "b0", "a1", "b1"):
         assert f"&quot;{k}&quot;" in out[0]
     assert "lone" not in out[0]
+
+
+@pytest.mark.parametrize("label, shown", [
+    ("1a · 3V3 -> AD hat 1 header 3V3", "AD hat 1 header 3V3"),
+    ("15j · Jetson 40-pin pin 8 (UART1_TX) -> R_JRX -> Teensy pin 21",
+     "Jetson 40-pin pin 8 (UART1_TX) -> R_JRX -> Teensy pin 21"),
+    ("2d · AD hat 1 DRDY (silk 17)", "AD hat 1 DRDY (silk 17)"),
+])
+def test_a_lead_stub_says_where_it_goes(label, shown):
+    assert render._lead_dest(label) == shown
+
+
+def test_leads_get_labelled_stubs_on_the_rail():
+    islands, rails, routed = _loaded()
+    svg, _links, _stubs = render.render_rail(rails[0], islands, routed,
+                                             TINTS)
+    n_leads = sum(1 for name in rails[0].islands
+                  for w in routed[name][0] if w.kind == "lead" and w.path)
+    assert n_leads
+    assert svg.count("(off-board lead)") == n_leads
+
+
+def test_crowded_stubs_spread_to_the_gap_around_their_mean():
+    out = render._asm_spread([(0, 0, "a"), (3, 3, "b"), (6, 6, "c"),
+                              (100, 100, "d")], 10)
+    xs = [x for x, _x0, _k in out]
+    assert xs == [-7.0, 3.0, 13.0, 100]
+    assert [k for _x, _x0, k in out] == ["a", "b", "c", "d"]
