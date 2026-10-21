@@ -184,7 +184,7 @@ def _local(addr):
 
 class _IslandRouter:
     def __init__(self, island: Island, remote_stubs, net_ctx=None,
-                 pair_side=None, rail_side=None):
+                 pair_side=None, rail_side=None, link_side=None):
         self.isl = island
         self.lat = Lattice(island)
         # net context (from the derived Design): endpoint -> nid,
@@ -195,6 +195,8 @@ class _IslandRouter:
         # the island's rail channel ("L"/"R"), which beats pair_side for
         # every interlink half on this board; None = no channel rail
         self.rail_side = rail_side
+        # interlink id -> "L"/"R" on a split rail, which beats both
+        self.link_side = link_side or {}
         self._build_occupancy()
         self.wires = self._collect_wires(remote_stubs)
         self.landings = self._scan_landings(remote_stubs)
@@ -545,8 +547,9 @@ class _IslandRouter:
             a, _ah = self._terminal(j.a)
             if not a or not isinstance(j.b, XIsland):
                 continue
-            side = self.rail_side or self.pair_side.get(j.b.island)
             link = f"{self.isl.name}#{idx}"
+            side = (self.link_side.get(link) or self.rail_side
+                    or self.pair_side.get(j.b.island))
             label = f"{_local(j.a)} ⇒ {j.b}"
             if getattr(j, "underside", False):
                 ex = self.lat.x_of("edgeR" if side != "L" else "edgeL")
@@ -566,7 +569,8 @@ class _IslandRouter:
             a, _ah = self._terminal(ep)
             if not a:
                 continue
-            side = self.rail_side or self.pair_side.get(origin)
+            side = (self.link_side.get(link) or self.rail_side
+                    or self.pair_side.get(origin))
             label = f"{_local(ep)} ⇐ {origin}"
             if under:
                 ex = self.lat.x_of("edgeR" if side != "L" else "edgeL")
@@ -938,7 +942,9 @@ def route_design(islands: dict, design=None, rules=None, panels=(),
     edge for islands that sit side by side, so the two halves of a
     cross-board wire run toward each other and meet at the seam.
     `rails` with a `channel:` override that: every interlink half on
-    one of their boards leaves by the channel's edge."""
+    one of their boards leaves by the channel's edge - or, on a
+    `split:` rail, a wire with both ends on that rail leaves by the
+    edge nearer its two ends."""
     ctx = _NetCtx(design, rules)
     sides = defaultdict(dict)
     for p in panels or ():
@@ -948,6 +954,7 @@ def route_design(islands: dict, design=None, rules=None, panels=(),
                     sides[mine][other] = p.side_of(mine, other)
     rail_side = {m: r.exit_side for r in rails or () if r.exit_side
                  for m in r.islands}
+    link_side = _split_sides(islands, rails)
     stubs = defaultdict(list)
     for isl in islands.values():
         for idx, j in enumerate(isl.interlinks):
@@ -964,8 +971,74 @@ def route_design(islands: dict, design=None, rules=None, panels=(),
         r = _IslandRouter(islands[name], sorted(
             stubs.get(name, []),
             key=lambda t: (t[0], t[1], t[2], t[3] or "")), ctx,
-            sides.get(name), rail_side.get(name))
+            sides.get(name), rail_side.get(name), link_side)
         out[name] = r.route()
+    return out
+
+
+def _edge_dist(isl, ep, lat):
+    """(columns to edgeL, columns to edgeR) for an interlink end, or
+    None where it cannot be placed. A bare half-row counts from the
+    hole of that half nearest each edge."""
+    if isinstance(ep, PinRef):
+        for part in isl.parts:
+            if part.ref != ep.ref:
+                continue
+            if ep.pin in part.pins:
+                return _edge_dist(isl, part.pins[ep.pin], lat)
+            if ep.pin in part.terms:
+                x = lat.x_of(part.terms[ep.pin].hole)
+                return x - lat.x_of("edgeL"), lat.x_of("edgeR") - x
+        return None
+    xl, xr = lat.x_of("edgeL"), lat.x_of("edgeR")
+    if isinstance(ep, HoleAddr):
+        if ep.hole:
+            x = lat.x_of(ep.hole)
+            return x - xl, xr - x
+        cols = LEFT_HOLES if ep.half == "L" else RIGHT_HOLES
+        return lat.x_of(cols[0]) - xl, xr - lat.x_of(cols[-1])
+    if isinstance(ep, RailAddr):
+        x = lat.x_of(f"rail:{ep.strip}")
+        return x - xl, xr - x
+    return None
+
+
+def _split_sides(islands, rails):
+    """{interlink id: 'L'/'R'} for every wire with both ends on one
+    `split:` rail: the edge with the shorter total fly over the two
+    boards, the rail's own channel on a tie."""
+    out = {}
+    for rail in rails or ():
+        if not (rail.split and rail.exit_side):
+            continue
+        on = set(rail.islands)
+        lats = {}
+        for name in rail.islands:
+            if name in islands:
+                lats[name] = Lattice(islands[name])
+        for name in rail.islands:
+            isl = islands.get(name)
+            if isl is None:
+                continue
+            for idx, j in enumerate(isl.interlinks):
+                if (getattr(j, "offgrid", False)
+                        or not isinstance(j.b, XIsland)
+                        or j.b.island not in on
+                        or j.b.island not in islands):
+                    continue
+                far = islands[j.b.island]
+                try:
+                    ep = parse_local(j.b.text, far.name, far.board,
+                                     far.rails)
+                except Exception:
+                    continue
+                da = _edge_dist(isl, j.a, lats[name])
+                db = _edge_dist(far, ep, lats[far.name])
+                if da is None or db is None:
+                    continue
+                left, right = da[0] + db[0], da[1] + db[1]
+                out[f"{name}#{idx}"] = (rail.exit_side if left == right
+                                        else "L" if left < right else "R")
     return out
 
 

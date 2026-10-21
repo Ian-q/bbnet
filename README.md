@@ -131,6 +131,11 @@ version the test suite itself uses.
   the gap between two carriers. A panel then draws whole only the wires
   whose halves still face each other; the rest keep labelled stubs.
   Without `channel:`, rails only draw.
+- **`split: true`** on a rail (needs `channel:`) runs a duct along BOTH
+  long edges. A wire with both ends on that rail takes whichever edge is
+  nearer its two ends (fewest columns flown over the two boards; a tie
+  keeps `channel`), so a run between two column-a pins stays below
+  instead of crossing both boards. Wires to other rails keep `channel`.
 - **`frozen: <reason>`** on an island marks a board that must not be
   re-laid-out (typically: already built). Advisory: `bbnet score` lists
   it and the layout review leaves it alone.
