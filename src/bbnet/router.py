@@ -33,9 +33,9 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from bbnet.geometry import (
-    HoleAddr, LEFT_HOLES, RIGHT_HOLES, RailAddr, parse_local,
+    HoleAddr, LEFT_HOLES, RIGHT_HOLES, RailAddr,
 )
-from bbnet.model import (Island, PinRef, XIsland, body_cover, dip_right_col,
+from bbnet.model import (Island, PinRef, XIsland, parse_endpoint, body_cover, dip_right_col,
                          pin_hole, radial_cover)
 
 TOP, BOT = 0, 1
@@ -171,6 +171,17 @@ class _Wire:
     nid: object = None            # derived net id (None = unknown)
     domain: str | None = None     # noise domain from rules['domains']
     pair: str | None = None       # twisted-pair label
+
+
+def _parse_far(text, island_name, board, rails):
+    """The local half of a cross-island address: a hole, a rail, or a
+    `REF.PIN` - a part pin or an off-grid terminal on the far board
+    (`island-5v-clean:U4.OUT+`). A hole-only parse would silently drop
+    a wire landing on a screw terminal from that board's drawing."""
+    ep = parse_endpoint(text, island_name, board, rails)
+    if isinstance(ep, XIsland):
+        raise ValueError(f"{text!r}: a far end cannot name a third board")
+    return ep
 
 
 def _local(addr):
@@ -499,7 +510,7 @@ class _IslandRouter:
             check(w.at, "lead", f"{_local(w.at)} · {w.label}")
         for origin, text, _c, _p, _n, _u, _link, far in remote_stubs:
             try:
-                ep = parse_local(text, self.isl.name, self.isl.board,
+                ep = _parse_far(text, self.isl.name, self.isl.board,
                                  self.isl.rails)
             except Exception:
                 continue
@@ -564,7 +575,7 @@ class _IslandRouter:
         for origin, text, colour, pair, nid, under, link, far in \
                 remote_stubs:
             try:
-                ep = parse_local(text, self.isl.name, self.isl.board,
+                ep = _parse_far(text, self.isl.name, self.isl.board,
                                  self.isl.rails)
             except Exception:
                 continue
@@ -1033,7 +1044,7 @@ def _split_sides(islands, rails):
                     continue
                 far = islands[j.b.island]
                 try:
-                    ep = parse_local(j.b.text, far.name, far.board,
+                    ep = _parse_far(j.b.text, far.name, far.board,
                                      far.rails)
                 except Exception:
                     continue

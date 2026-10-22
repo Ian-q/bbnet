@@ -146,3 +146,19 @@ def test_render_draws_the_terminal_and_its_lead():
     assert '<tspan class="vn vn-name">VOUT+</tspan>' in page
     assert "CLK.VIN+: terminal on the body" in page
     assert "12 V in" in page
+
+
+def test_a_wire_landing_on_a_terminal_is_drawn_on_that_board_too():
+    """The far half of an interlink that ends on a terminal used to be
+    dropped from the far board's drawing: the router parsed `CLK.VOUT+`
+    as a hole address, failed, and skipped it silently."""
+    from bbnet import router
+
+    def edit(raw):
+        raw["demo-right"].setdefault("interlinks", []).append(
+            {"from": "30a", "to": "demo-left:CLK.VOUT+", "colour": "RED"})
+    islands, d = _design(edit)
+    routed = router.route_design(islands, d)
+    labels = [w.label for w in routed["demo-left"][0]
+              if w.kind == "interlink"]
+    assert "CLK.VOUT+ ⇐ demo-right:30a" in labels
