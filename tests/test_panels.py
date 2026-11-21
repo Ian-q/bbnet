@@ -285,3 +285,13 @@ def test_panel_labels_are_painted_after_the_seam_wires():
     assert last_seam > 0, "no stitched seam wire in this panel"
     assert svg.find('class="rn halo"', last_seam) > 0, (
         "row numbers are painted before the last seam wire")
+
+
+def test_a_rails_block_is_refused_not_ignored():
+    """The DIN-rail assembly view and its channel:/split: routing are
+    gone. A rails: block used to decide which edge every interlink left
+    by, so silently ignoring it would re-route an existing design
+    without saying so: it must raise and say what to do."""
+    with pytest.raises(model.ModelError, match="rails:.*delete the block"):
+        model.panels_from({"rails": [{"name": "R", "islands": ["a"]}]},
+                          {"a"})

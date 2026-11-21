@@ -19,12 +19,12 @@ board per page with checkbox kitting tables for the bench.
 from __future__ import annotations
 
 import html
-import json
 import re
 import zlib
 
-from bbnet.geometry import HoleAddr, RailAddr
-from bbnet.model import body_cover, dip_right_col, face_toward, pin_hole
+from bbnet.geometry import LEFT_HOLES, RIGHT_HOLES, HoleAddr, RailAddr
+from bbnet.model import (body_cover, body_holes, dip_right_col, face_toward,
+                         pin_hole)
 from bbnet.router import BOT, TOP, route_design
 
 # px geometry
@@ -1530,6 +1530,235 @@ def island_body(island, wires, stats, lattice, skip_links=(),
     return "\n".join(S), labels, px
 
 
+# ------------------------------------------------------- underside view
+#
+# A `wiring: underside` board (clean top, messy bottom) is built with
+# parts only on its top face and every wire soldered underneath, loose,
+# crossing wherever it likes. You trace a wire by turning the board over
+# on its hinge, so the sheet draws the bottom the way it then LOOKS -
+# mirrored, as if rotated by hand - not see-through from the top (that
+# x-ray stays in the upright view: its translucent pipes and the
+# front/back focus). Text is never mirrored; only positions are.
+
+class FlipPxMap(PxMap):
+    """A PxMap of the board turned over. `axis` "cols" turns it about its
+    long edge (like a page: column j comes to the left, rows stay put);
+    "rows" about its short edge (row 1 goes to the bottom, columns stay
+    put). Every layer that only asks the map for x/y draws mirrored for
+    free."""
+
+    def __init__(self, lattice, axis="cols"):
+        super().__init__(lattice)
+        self.axis = axis
+
+    def x(self, xi):
+        v = super().x(xi)
+        return round(self.width - v, 1) if self.axis == "cols" else v
+
+    def y(self, row):
+        if self.axis == "rows":
+            return super().y(self.lat.rows + 1 - row)
+        return super().y(row)
+
+
+UV_BOW_MIN, UV_BOW_MAX = 6.0, 26.0   # px a loose run bows off its chord
+
+
+def _uv_curve(key, x0, y0, x1, y1):
+    """A loose run as one gentle quadratic curve. Real underside wires
+    are cut long and lie slack, and a curve per wire keeps two that
+    cross from reading as one straight line; the bow's side and size are
+    keyed on the wire, so the sheet is reproducible."""
+    dx, dy = x1 - x0, y1 - y0
+    length = (dx * dx + dy * dy) ** 0.5
+    if length < 1:
+        return f"M {x0},{y0} L {x1},{y1}"
+    h = zlib.crc32(key.encode("utf-8"))
+    bow = min(max(length * 0.16, UV_BOW_MIN), UV_BOW_MAX)
+    bow *= (0.7 + 0.3 * ((h >> 3) % 4) / 3) * (1 if h & 1 else -1)
+    mx, my = (x0 + x1) / 2 - dy / length * bow, (y0 + y1) / 2 + dx / length * bow
+    return (f"M {x0},{y0} Q {round(mx, 1)},{round(my, 1)} "
+            f"{x1},{y1}")
+
+
+def _uv_strips(add, px, lattice):
+    """The copper you see from below: one strip per row-half (its five
+    holes are one node) under the hole dots."""
+    for r in range(1, lattice.rows + 1):
+        y = px.y(r)
+        for holes in (LEFT_HOLES, RIGHT_HOLES):
+            xs = [px.col_x(h) for h in holes]
+            x0, x1 = min(xs) - 5.5, max(xs) + 5.5
+            add(f'<rect x="{round(x0, 1)}" y="{round(y - 4.5, 1)}" '
+                f'width="{round(x1 - x0, 1)}" height="9" rx="4.5" '
+                f'fill="#d9b779" fill-opacity="0.28"/>')
+
+
+def _uv_legs(add, px, island):
+    """Every leg through the board, seen from below as its solder joint,
+    and every part body as a dashed ghost through the board with its ref
+    upright - the landmarks you find your place by on the underside."""
+    S = []
+    lat = px.lat
+
+    def joint(hole, row, title):
+        S.append(f'<circle cx="{px.col_x(hole)}" cy="{px.y(row)}" r="3.3" '
+                 f'fill="#9a9a96" stroke="#6b6b66" stroke-width="0.8">'
+                 f'<title>{esc(title)}</title></circle>')
+
+    def ghost(cells, ref, title):
+        if not cells:
+            return
+        xs = [px.col_x(h) for _r, h in cells]
+        ys = [px.y(r) for r, _h in cells]
+        x0, x1 = min(xs) - 6, max(xs) + 6
+        y0, y1 = min(ys) - 6, max(ys) + 6
+        S.append(f'<g class="lyr-part"><rect x="{round(x0, 1)}" '
+                 f'y="{round(y0, 1)}" width="{round(x1 - x0, 1)}" '
+                 f'height="{round(y1 - y0, 1)}" rx="3" fill="none" '
+                 f'stroke="#7a7263" stroke-width="1" '
+                 f'stroke-dasharray="4 3"><title>{esc(title)} (on the '
+                 f'top face)</title></rect>'
+                 f'<text x="{round((x0 + x1) / 2, 1)}" '
+                 f'y="{round(min(y0, y1) - 3, 1)}" class="uvref halo" '
+                 f'text-anchor="middle">{esc(ref)}</text></g>')
+
+    for part in island.parts:
+        cells = []
+        for pn, a in part.pins.items():
+            hole = pin_hole(part, a)
+            if hole is None or a.row > lat.rows:
+                continue
+            cells.append((a.row, hole))
+            joint(hole, a.row, f"{part.ref}.{pn}")
+        body = [(r, h) for r, h in body_holes(part) if r <= lat.rows]
+        ghost(cells + body, part.ref, f"{part.ref} {part.value}".strip())
+    for q, terms in island.terminal_groups():
+        cells = []
+        for t in terms:
+            a = t.addr
+            if isinstance(a, HoleAddr) and a.hole and a.row <= lat.rows:
+                cells.append((a.row, a.hole))
+                joint(a.hole, a.row, f"{q.ref}.{t.name}")
+        if len(cells) > 1:
+            ghost(cells, q.ref,
+                  f"{q.ref} {getattr(q, 'value', '')}".strip())
+    add('\n'.join(S))
+
+
+def _uv_wires(add, px, wires, lattice, rail_tints, island, alias=None):
+    """Each underside run as a loose curve between its two solder holes;
+    one that leaves the board runs to the edge it exits by and is named
+    outside it. Same `wire` groups and keys as the upright view, so a
+    click (here, there, or on a kitting row) isolates it in both;
+    `alias` maps the far half of a wire a panel draws whole across its
+    seam to the key that whole wire is drawn and kitted under."""
+    alias = alias or {}
+    labels = []
+    wants = []
+    cx_mid = px.width / 2
+    for w in wires:
+        if not w.underside or not w.path:
+            continue
+        bots = [c for c in w.path if c.layer == BOT]
+        if len(bots) < 2:
+            continue
+        a, b = bots[0], bots[-1]
+        colour = WIRE_COLOURS.get(w.colour, WIRE_COLOURS[""])
+        x0, y0 = px.x(a.x), px.y(a.y)
+        x1, y1 = px.x(b.x), px.y(b.y)
+        # a rail end lands on its strip's real hole height
+        if lattice.is_rail(a.x):
+            y0 = _rail_y(px, a.y)
+        if lattice.is_rail(b.x):
+            y1 = _rail_y(px, b.y)
+        title = f"{w.colour or '?'}: {w.label} — underside run"
+        add(f'<g class="wire" data-w="{esc(alias.get(w.key, w.key))}" '
+            f'data-kind="{esc(w.kind)}">')
+        add(f'<path class="uv" d="{_uv_curve(w.key, x0, y0, x1, y1)}" '
+            f'fill="none" stroke="{colour}" stroke-width="3.2" '
+            f'stroke-linecap="round"><title>{esc(title)}</title></path>')
+        for (cx, cy, c) in ((x0, y0, a), (x1, y1, b)):
+            if lattice.is_edge(c.x):
+                continue
+            add(f'<circle class="uv" cx="{cx}" cy="{cy}" r="3.6" '
+                f'fill="{colour}" stroke="#2b2b2b" stroke-width="0.9">'
+                f'<title>{esc(title)}</title></circle>')
+        add('</g>')
+        for (cx, cy, c) in ((x0, y0, a), (x1, y1, b)):
+            if lattice.is_edge(c.x):
+                wants.append(("R" if cx > cx_mid else "L", cy, w.label,
+                              cx))
+    last = {}
+    for side, want, text, ex in sorted(wants):
+        ly = max(want + 3, last.get(side, -1e9) + 10.5)
+        last[side] = ly
+        shown, full = _fit_label(text, MARGIN - 24)
+        if not shown:
+            continue
+        tip = f"<title>{esc(full)}</title>" if full else ""
+        if side == "R":
+            lx, anchor = ex + 10, ""
+        else:
+            lx, anchor = ex - 10, ' text-anchor="end"'
+        labels.append(f'<text x="{round(lx, 1)}" y="{round(ly, 1)}" '
+                      f'class="lead lyr-label halo"{anchor}>'
+                      f'{esc(shown)}{tip}</text>')
+    return labels, (max(last.values()) if last else 0)
+
+
+def underside_view(island, wires, lattice, rail_tints, alias=None):
+    """The board turned over on its hinge, as an <svg>: copper strips,
+    every leg's solder joint, part bodies ghosted through the board, and
+    the loose underside runs drawn solid. Mirrored about the long edge
+    (`flip: cols`, the default) or the short one (`flip: rows`)."""
+    axis = getattr(island, "flip", "cols")
+    px = FlipPxMap(lattice, axis)
+    S = []
+    add = S.append
+    bx0 = min(px.col_x("edgeL"), px.col_x("edgeR")) - EDGE_W / 2 + 4
+    bx1 = max(px.col_x("edgeL"), px.col_x("edgeR")) + EDGE_W / 2 - 4
+    add(f'<rect x="{bx0}" y="{HDR_BOARD}" width="{bx1-bx0}" '
+        f'height="{px.height+FTR_BOARD-HDR_BOARD}" rx="8" fill="#efe9dc" '
+        f'stroke="#c8c2b2"/>')
+    n = sum(1 for w in wires if w.underside)
+    turn = ("about its long edge: column j is on the LEFT now"
+            if axis == "cols" else
+            "about its short edge: row 1 is at the BOTTOM now")
+    add(f'<text x="{bx0+6}" y="{HDR_TITLE}" class="ttl">'
+        f'{esc(island.name)} — underside, board turned over  '
+        f'<tspan class="sub">({turn}; {n} loose runs)</tspan></text>')
+    _rail_bands(add, px, island, lattice, rail_tints)
+    _ravine_keepouts(add, px, island)
+    _uv_strips(add, px, lattice)
+    _hole_grid(add, px, lattice)
+    _column_letters(add, px, lattice)
+    _uv_legs(add, px, island)
+    labels, label_y = _uv_wires(add, px, wires, lattice, rail_tints, island,
+                                alias)
+    labels += _row_numbers(px, lattice)
+    height = max(px.height, round(label_y + 14, 1))
+    return (f'<svg class="uv-sheet" viewBox="0 0 {px.width} {height}" '
+            f'width="{px.width}" height="{height}" '
+            f'xmlns="http://www.w3.org/2000/svg">' + "\n".join(S) + "\n"
+            + "\n".join(labels) + "</svg>")
+
+
+def underside_note(island):
+    """The pane beside the underside view: how to read it."""
+    axis = getattr(island, "flip", "cols")
+    how = ("Turn the board over about its long edge, like a page"
+           if axis == "cols" else
+           "Turn the board over about its short edge")
+    return ('<p class="uvnote"><b>Seen from below.</b> ' + how
+            + ': this is what you see, so match it hole for hole. Grey '
+            'dots are the legs of the parts on top (dashed outlines); '
+            'every wire is soldered here, loose and free to cross. Hover '
+            'a wire for both ends; click it, or its kitting row above, '
+            'to isolate it in both views. The upright view above is the '
+            'x-ray: same wires, seen through the board.</p>')
+
+
 # ------------------------------------------------------------- panels
 
 def seam_links(panel, routed):
@@ -1538,11 +1767,9 @@ def seam_links(panel, routed):
     were routed and both islands sit in this panel — an interlink to a
     board outside the panel keeps its ghost-bus stub.
 
-    Both halves must also leave by the edges that FACE each other. A
-    rail `channel:` sends every half out one long edge, so on a channel
-    rail a panel-mate's wire usually leaves away from the seam; it is
-    run in the assembly view's channel, and here it keeps its labelled
-    stub at each end rather than being drawn back across a board."""
+    Both halves must also leave by the edges that FACE each other; a
+    half sent out the far edge keeps its labelled stub at each end
+    rather than being drawn back across a board."""
     halves = {}
     for name in panel.islands:
         for w in routed[name][0]:
@@ -1706,441 +1933,10 @@ def render_panel(panel, islands, routed, rail_tints, label_offsets=None,
             + "</svg>"), links
 
 
-# ------------------------------------------------------------ assembly
-
-ASM_LANE = 7         # px between parallel wires in a channel
-ASM_CLEAR = 14       # px from the carriers' edge to the first lane
-ASM_NAME_H = 22      # band above the top channel for the board names
-
-
 def island_anchor(name):
     """Fragment id of an island's upright build sheet (its focus view)."""
     return "isl-" + "".join(c if c.isalnum() or c in "-_" else "-"
                              for c in name)
-
-
-def _asm_exit_side(wire, lattice):
-    """Which long edge of the CARRIED board a wire half leaves by:
-    'bot' for the column-a edge (upright left), 'top' for the far one.
-    A half with no routed path is treated as leaving at the bottom."""
-    if not wire.path:
-        return "bot"
-    return "bot" if wire.path[-1].x <= lattice.x_of("edgeL") else "top"
-
-
-ASM_BUNDLE_GAP = 9   # extra px between two bundles in one channel
-ASM_JOG = 4          # px between drops that leave a board at one row
-ASM_STUB_JOG = 10    # ... when two of them are labelled stubs
-ASM_STUB_TEXT = 120  # px of rotated text on a stub (~22 characters)
-
-
-def _asm_spread(items, gap):
-    """[(x, x0, key)] sorted by x -> the same with x moved so that no
-    two are closer than `gap`: crowded runs are laid out evenly around
-    their own mean, merging with a neighbour run when they would touch."""
-    runs = []
-    for it in items:
-        runs.append([it])
-        while len(runs) > 1:
-            a, b = runs[-2], runs[-1]
-            if _run_pos(a, gap)[-1] + gap <= _run_pos(b, gap)[0]:
-                break
-            runs[-2:] = [a + b]
-    out = []
-    for run in runs:
-        out.extend((x, x0, k) for x, (_x, x0, k) in
-                   zip(_run_pos(run, gap), run))
-    return out
-
-
-def _run_pos(run, gap):
-    """Evenly spaced positions for one run, centred on its mean."""
-    if len(run) == 1:
-        return [run[0][0]]
-    mid = sum(x for x, _x0, _k in run) / len(run)
-    return [mid + (j - (len(run) - 1) / 2) * gap for j in range(len(run))]
-
-
-def _lead_dest(label):
-    """What a lead's stub says: where it GOES. The router labels a lead
-    `<hole> · <the YAML label>`; drop the hole, and a leading `NET -> `
-    (the net is already the wire's colour and hover), so
-    `1a · 3V3 -> AD hat 1 header 3V3` reads `AD hat 1 header 3V3`."""
-    text = (label or "").split(" · ", 1)[-1].strip()
-    head, sep, rest = text.partition(" -> ")
-    if sep and head and " " not in head and rest.strip():
-        return rest.strip()
-    return text or "off-board"
-
-
-def _asm_bundle_pack(items):
-    """Pack channel runs as BUNDLES: {key: px offset from the first
-    lane}, plus the channel's depth in px.
-
-    `items` is [(key, group, lo, hi)]. Every run in one group - the wires
-    between one pair of boards - gets a block of adjacent lanes, so the
-    group is laid, labelled and traced as one harness, and blocks are
-    kept ASM_BUNDLE_GAP apart so one bundle never reads as part of the
-    next. Inside a block the shortest run hugs the boards (the order with
-    the fewest crossings). Blocks are placed shortest
-    first, each at the smallest depth that clears every block it
-    overlaps along the rail."""
-    groups = {}
-    for key, g, lo, hi in items:
-        groups.setdefault(g, []).append((key, lo, hi))
-    blocks = []
-    for g, runs in groups.items():
-        lo = min(r[1] for r in runs)
-        hi = max(r[2] for r in runs)
-        runs.sort(key=lambda r: (r[2] - r[1], r[0]))
-        blocks.append((hi - lo, str(g), lo, hi, runs))
-    blocks.sort(key=lambda b: (b[0], b[1]))
-    placed, out, depth = [], {}, 0.0
-    for _len, _g, lo, hi, runs in blocks:
-        h = len(runs) * ASM_LANE
-        near = sorted((y0, y1) for a, b, y0, y1 in placed
-                      if not (hi + 6 < a or lo - 6 > b))
-        y = 0.0
-        for y0, y1 in near:
-            if y + h + ASM_BUNDLE_GAP <= y0:
-                break
-            y = max(y, y1 + ASM_BUNDLE_GAP)
-        placed.append((lo, hi, y, y + h))
-        for n, (key, _lo, _hi) in enumerate(runs):
-            out[key] = y + n * ASM_LANE
-        depth = max(depth, y + h)
-    return out, depth
-
-
-def render_rail(rail, islands, routed, rail_tints):
-    """The ASSEMBLY view of one rail: every board turned 90 degrees
-    counter-clockwise the way its carrier holds it (row 1 left, column a
-    down), side by side in mounting order, and every wire between two of
-    them drawn the way it is run in the box - out over the board's long
-    edge, into a channel above or below the rail, along it, and back in.
-
-    The boards here are the same drawing as their upright build sheets,
-    turned; labels are left off at this scale. Each board's name links
-    to its upright sheet, which is where it is assembled."""
-    boards = []
-    for name in rail.islands:
-        wires, stats, lattice = routed[name]
-        body, _labels, px = island_body(islands[name], wires, stats,
-                                        lattice, rail_tints=rail_tints)
-        ux0 = px.col_x("edgeL") - EDGE_W / 2 + 4
-        ux1 = px.col_x("edgeR") + EDGE_W / 2 - 4
-        uy0 = HDR_BOARD
-        uy1 = HEAD + lattice.rows * CELL + FOOT + FTR_BOARD
-        boards.append(dict(name=name, body=body, px=px, lat=lattice,
-                           wires=wires, ux0=ux0, ux1=ux1, uy0=uy0,
-                           uy1=uy1, w=uy1 - uy0, h=ux1 - ux0))
-
-    # links with both halves on this rail, and halves whose far end is
-    # elsewhere (another rail, or no rail) - those get a labelled stub
-    halves, stubs = {}, []
-    for i, b in enumerate(boards):
-        for w in b["wires"]:
-            if w.kind != "interlink" or not w.link:
-                continue
-            halves.setdefault(w.link, {})[w.link_end] = (i, w)
-    # leads leave the rail altogether (to a hat, a sensor, a cable):
-    # they get the same labelled stub, saying where they go
-    leads = [(i, w) for i, b in enumerate(boards) for w in b["wires"]
-             if w.kind == "lead" and w.path]
-    links = {}
-    for k, v in sorted(halves.items()):
-        if "a" in v and "b" in v:
-            links[k] = (v["a"], v["b"])
-        else:
-            stubs.extend(v.values())
-
-    tallest = max(b["h"] for b in boards)
-    # first pass: x positions, so channel spans are known
-    x = 0.0
-    for b in boards:
-        b["X0"] = x
-        x += b["w"] + rail.gap
-    width_core = x - rail.gap
-
-    def at(i, wire):
-        b = boards[i]
-        if wire.path:
-            ux = b["px"].x(wire.path[-1].x)
-            uy = b["px"].y(wire.path[-1].y)
-        else:
-            ux, uy = b["ux0"], b["px"].y(1)
-        return b["X0"] + (uy - b["uy0"]), ux   # Y is fixed up below
-
-    def gap_x(i, toward):
-        """The gap beside board i on the side facing board `toward`."""
-        b = boards[i]
-        if toward < i:
-            return b["X0"] - rail.gap / 2
-        return b["X0"] + b["w"] + rail.gap / 2
-
-    spans = {"top": [], "bot": []}
-    plan = {}
-    gap_use = {}
-    for k, ((ia, wa), (ib, wb)) in links.items():
-        sa = _asm_exit_side(wa, boards[ia]["lat"])
-        sb = _asm_exit_side(wb, boards[ib]["lat"])
-        xa, _ = at(ia, wa)
-        xb, _ = at(ib, wb)
-        pair = (min(ia, ib), max(ia, ib))
-        if sa == sb:
-            spans[sa].append((k, pair, min(xa, xb), max(xa, xb)))
-            plan[k] = (sa, sb, None)
-        else:
-            gx = gap_x(ib, ia)
-            gap_use.setdefault(round(gx, 1), []).append(k)
-            spans[sa].append((k + "#a", pair + ("a",), min(xa, gx),
-                              max(xa, gx)))
-            spans[sb].append((k + "#b", pair + ("b",), min(xb, gx),
-                              max(xb, gx)))
-            plan[k] = (sa, sb, gx)
-    lane_top, d_top = _asm_bundle_pack(spans["top"])
-    lane_bot, d_bot = _asm_bundle_pack(spans["bot"])
-    # each side reserves stub room only for the stubs that leave by it,
-    # so a channel rail carries no empty band on its quiet side
-    stub_sides = {_asm_exit_side(w, boards[i]["lat"])
-                  for i, w in stubs + leads}
-    top_band = (ASM_CLEAR + max(d_top, ASM_LANE)
-                + (ASM_STUB_TEXT + 8 if "top" in stub_sides else 0))
-    bot_band = (ASM_CLEAR + max(d_bot, ASM_LANE)
-                + (ASM_STUB_TEXT + 8 if "bot" in stub_sides else 0))
-    mid = ASM_NAME_H + top_band + tallest / 2     # the rail's centreline
-
-    def place(i, wire):
-        """Assembly coordinates of a half's exit, plus its edge y."""
-        b = boards[i]
-        X, ux = at(i, wire)
-        Y0 = mid - b["h"] / 2
-        Y = Y0 + (b["ux1"] - ux)
-        side = _asm_exit_side(wire, b["lat"])
-        edge = Y0 if side == "top" else Y0 + b["h"]
-        return X, Y, edge, side
-
-    def lane_y(side, off):
-        if side == "top":
-            return mid - tallest / 2 - ASM_CLEAR - off
-        return mid + tallest / 2 + ASM_CLEAR + off
-
-    # Halves that leave one board at the same row would drop down the
-    # same line and hide each other (and a stub): spread them ASM_JOG
-    # apart with a short jog along the board's edge. Ordered by depth,
-    # so the run to the nearest lane takes the drop nearest the run.
-    drops = {}
-    for k, ((ia, wa), (ib, wb)) in links.items():
-        _sa, _sb, gx = plan[k]
-        for i, w, end in ((ia, wa, "a"), (ib, wb, "b")):
-            side = _asm_exit_side(w, boards[i]["lat"])
-            lk = k if gx is None else f"{k}#{end}"
-            off = (lane_top if side == "top" else lane_bot)[lk]
-            drops.setdefault((i, side, round(at(i, w)[0], 1)), []).append(
-                (off, w.key))
-    for i, w in stubs + leads:
-        side = _asm_exit_side(w, boards[i]["lat"])
-        drops.setdefault((i, side, round(at(i, w)[0], 1)), []).append(
-            (1e9, w.key))
-    jog = {}
-    for (i, _side, _x), ds in drops.items():
-        ds.sort()
-        # two stubs carry two rotated labels side by side: give the text
-        # room, not just the wires
-        step = ASM_STUB_JOG if sum(o == 1e9 for o, _ in ds) > 1 \
-            else ASM_JOG
-        for j, (_o, wk) in enumerate(ds):
-            jog[(i, wk)] = (j - (len(ds) - 1) / 2) * step
-
-    # Stubs on adjacent rows are only a row apart, closer than two
-    # rotated labels need: spread every stub on one board edge to at
-    # least ASM_STUB_JOG, each run of crowded ones centred where they
-    # leave, order kept.
-    edges = {}
-    for i, w in stubs + leads:
-        side = _asm_exit_side(w, boards[i]["lat"])
-        x0 = at(i, w)[0]
-        edges.setdefault((i, side), []).append(
-            (x0 + jog.get((i, w.key), 0), x0, w.key))
-    for (i, _side), items in edges.items():
-        for (x, x0, wk) in _asm_spread(sorted(items), ASM_STUB_JOG):
-            jog[(i, wk)] = x - x0
-
-    def dropped(x, y, edge, side, dx):
-        """The exit, then a jog of dx along the edge if it needs one."""
-        if not dx:
-            return [(x, y)]
-        e = edge + (-2 if side == "top" else 2)
-        return [(x, y), (x, e), (x + dx, e)]
-
-    height = round(ASM_NAME_H + top_band + tallest + bot_band, 1)
-    width = round(width_core, 1)
-    S = [f'<line x1="0" y1="{round(mid, 1)}" x2="{width}" '
-         f'y2="{round(mid, 1)}" stroke="#b9b4a8" stroke-width="26" '
-         'stroke-opacity="0.35"><title>DIN rail</title></line>']
-    for i, b in enumerate(boards):
-        Y0 = mid - b["h"] / 2
-        e = round(b["X0"] - b["uy0"], 1)
-        f = round(b["ux1"] + Y0, 1)
-        cid = f'asmclip-{island_anchor(rail.name)}-{i}'
-        S.append(
-            f'<clipPath id="{cid}"><rect x="{b["ux0"]}" y="{b["uy0"]}" '
-            f'width="{round(b["h"], 1)}" height="{round(b["w"], 1)}"/>'
-            '</clipPath>'
-            f'<g class="asm-board" data-island="{esc(b["name"])}" '
-            f'transform="matrix(0 -1 1 0 {e} {f})">'
-            f'<g clip-path="url(#{cid})">{b["body"]}</g></g>')
-        S.append(
-            f'<a href="#{island_anchor(b["name"])}">'
-            f'<text class="asm-name" x="{round(b["X0"] + b["w"] / 2, 1)}" '
-            f'y="{round(ASM_NAME_H - 6, 1)}" text-anchor="middle">'
-            f'{esc(b["name"])} ↗<title>open the upright build sheet '
-            f'for {esc(b["name"])}</title></text></a>')
-
-    gap_seen = {}
-    for k in sorted(links, key=lambda k: k):
-        (ia, wa), (ib, wb) = links[k]
-        ax, ay, aedge, sa = place(ia, wa)
-        bx, by, bedge, sb = place(ib, wb)
-        _sa, _sb, gx = plan[k]
-        da, db = jog.get((ia, wa.key), 0), jog.get((ib, wb.key), 0)
-        head = dropped(ax, ay, aedge, sa, da)
-        tail = dropped(bx, by, bedge, sb, db)[::-1]
-        ax, bx = ax + da, bx + db
-        if gx is None:
-            ly = lane_y(sa, (lane_top if sa == "top" else lane_bot)[k])
-            pts = head + [(ax, ly), (bx, ly)] + tail
-        else:
-            la = lane_y(sa, (lane_top if sa == "top" else
-                             lane_bot)[k + "#a"])
-            lb = lane_y(sb, (lane_top if sb == "top" else
-                             lane_bot)[k + "#b"])
-            key = round(gx, 1)
-            n = len(gap_use[key])
-            j = gap_seen.get(key, 0)
-            gap_seen[key] = j + 1
-            gxx = gx + (j - (n - 1) / 2) * min(ASM_LANE, rail.gap / max(n, 1))
-            pts = head + [(ax, la), (gxx, la), (gxx, lb), (bx, lb)] + tail
-        pts = [(round(p[0], 1), round(p[1], 1)) for p in pts]
-        pts = [p for n_, p in enumerate(pts) if n_ == 0 or p != pts[n_ - 1]]
-        under = wa.underside or wb.underside
-        title = (f"{wa.colour or '?'}: {wa.label} - "
-                 f"{boards[ia]['name']} -> {boards[ib]['name']}, via the "
-                 + ("channel " + ("above" if sa == "top" else "below")
-                    if gx is None else
-                    "channels on both sides, through the gap"))
-        S.append(_seam_pipe(pts, WIRE_COLOURS.get(wa.colour,
-                                                  WIRE_COLOURS[""]),
-                            under, title, wa.key))
-
-    for i, w in stubs + leads:
-        X, Y, edge, side = place(i, w)
-        if w.kind == "lead":
-            far = _lead_dest(w.label)
-        else:
-            far = (w.label or "").split("→")[-1].strip() or "elsewhere"
-        sgn = -1 if side == "top" else 1
-        end = edge + sgn * (ASM_CLEAR + (d_top if side == "top" else
-                                         d_bot) + 6)
-        colour = WIRE_COLOURS.get(w.colour, WIRE_COLOURS[""])
-        dx = jog.get((i, w.key), 0)
-        d = " ".join(f"L{round(px_, 1)},{round(py_, 1)}" for px_, py_ in
-                     dropped(X, Y, edge, side, dx)[1:])
-        X += dx
-        S.append(f'<g class="wire" data-w="{esc(w.key)}" '
-                 f'data-kind="{esc(w.kind)}">'
-                 f'<path d="M{round(X - dx, 1)},{round(Y, 1)} {d} '
-                 f'L{round(X, 1)},{round(end, 1)}" stroke="{colour}" '
-                 'stroke-width="3" stroke-dasharray="4 3" fill="none">'
-                 f'<title>{esc(w.label)} ('
-                 + ("off-board lead" if w.kind == "lead" else
-                    "off this rail") + ')</title></path>'
-                 f'<text class="asm-stub" x="{round(X + 3, 1)}" '
-                 f'y="{round(end, 1)}" transform="rotate('
-                 f'{-90 if side == "top" else 90} {round(X, 1)} '
-                 f'{round(end, 1)})">{esc(_fit_label(far, ASM_STUB_TEXT)[0])}</text>'
-                 '</g>')
-    S.extend(_asm_bundle_handles(links, spans, lane_top, lane_bot, lane_y,
-                                 [b["name"] for b in boards]))
-    svg = (f'<svg viewBox="0 0 {width} {height}" width="{width}" '
-           f'height="{height}" xmlns="http://www.w3.org/2000/svg">'
-           + "\n".join(S) + "</svg>")
-    return svg, links, stubs
-
-
-def _asm_bundle_handles(links, spans, lane_top, lane_bot, lane_y, names):
-    """One clickable tag per bundle of two or more wires: click it and
-    every wire between that pair of boards lights up - both halves on
-    the boards and the run in the channel, here and on the upright
-    sheets - so a whole harness can be laid in one go. Clicking a single
-    wire afterwards narrows to that wire, as before.
-
-    The tag sits on the bundle's largest block, centred on it."""
-    by_pair = {}
-    for k, ((ia, wa), (ib, wb)) in links.items():
-        by_pair.setdefault((min(ia, ib), max(ia, ib)), []).append(
-            (k, wa, wb))
-    out = []
-    for pair, members in sorted(by_pair.items()):
-        if len(members) < 2:
-            continue
-        keys = sorted({w.key for _k, wa, wb in members for w in (wa, wb)})
-        blocks = {}
-        for side, lanes in (("top", lane_top), ("bot", lane_bot)):
-            for key, g, lo, hi in spans[side]:
-                if g[:2] == pair:
-                    blocks.setdefault((side, g), []).append(
-                        (lanes[key], lo, hi))
-        (side, _g), runs = max(blocks.items(),
-                               key=lambda kv: (len(kv[1]), kv[0][0]))
-        lo = min(r[1] for r in runs)
-        hi = max(r[2] for r in runs)
-        y = (lane_y(side, min(r[0] for r in runs))
-             + lane_y(side, max(r[0] for r in runs))) / 2
-        text = f"{names[pair[0]]} ↔ {names[pair[1]]} · {len(members)}"
-        w = round(len(text) * 4.9 + 10, 1)
-        x = round((lo + hi) / 2 - w / 2, 1)
-        out.append(
-            f'<g class="asm-bundle" data-ws="{esc(json.dumps(keys))}">'
-            f'<rect x="{x}" y="{round(y - 6.5, 1)}" width="{w}" '
-            'height="13" rx="6.5"/>'
-            f'<text x="{round(x + w / 2, 1)}" y="{round(y + 3, 1)}" '
-            f'text-anchor="middle">{esc(text)}</text>'
-            f'<title>select all {len(members)} wires between '
-            f'{esc(names[pair[0]])} and {esc(names[pair[1]])}; then '
-            'click one wire to narrow to it</title></g>')
-    return out
-
-
-def assembly_table(rail, links, stubs, routed):
-    """What the assembly view adds to the cut lists: the boards in rail
-    order (each a link to its upright sheet) and every board-to-board
-    wire with the side it runs on."""
-    rows = []
-    for i, name in enumerate(rail.islands):
-        rows.append(f"<tr><td>{i + 1}</td><td><a href=\"#"
-                    f"{island_anchor(name)}\">{esc(name)}</a></td></tr>")
-    out = ['<table class="kt"><tr><th>#</th><th>board, in rail order '
-           '(left to right)</th></tr>' + "".join(rows) + "</table>"]
-    if links:
-        r = []
-        for k, ((ia, wa), (ib, wb)) in links.items():
-            sa = _asm_exit_side(wa, routed[rail.islands[ia]][2])
-            sb = _asm_exit_side(wb, routed[rail.islands[ib]][2])
-            via = ({"top": "above", "bot": "below"}[sa] if sa == sb
-                   else "both sides, through a gap")
-            r.append(f"<tr class='krow' data-w='{esc(wa.key)}'><td>"
-                     f"{esc(wa.colour or '?')}</td><td>"
-                     f"{esc(rail.islands[ia])}</td><td>"
-                     f"{esc(rail.islands[ib])}</td><td>{via}</td></tr>")
-        out.append('<table class="kt"><tr><th>wire</th><th>from</th>'
-                   '<th>to</th><th>channel</th></tr>' + "".join(r)
-                   + "</table>")
-    if stubs:
-        out.append(f'<p class="sub">{len(stubs)} wire(s) leave this rail '
-                   "(dashed stubs) - they are kitted on their own boards' "
-                   "sheets.</p>")
-    return "".join(out)
 
 
 def _route_text(wire, lattice):
@@ -2312,15 +2108,6 @@ details.help summary{cursor:pointer;color:#7a7263}
      overflow:auto}
 .island .kit details{margin:0}
 .island.stacked{grid-template-columns:1fr}
-.asm-name{font:600 12px ui-monospace,monospace;fill:#3b5b8c;cursor:pointer}
-.asm-name:hover{text-decoration:underline}
-.asm-stub{font:8px ui-monospace,monospace;fill:#6b6455}
-.asm-bundle{cursor:pointer}
-.asm-bundle rect{fill:#fffdf6;stroke:#6b6455;stroke-width:1}
-.asm-bundle text{font:8px ui-monospace,monospace;fill:#3d382d}
-.asm-bundle:hover rect,.asm-bundle.sel rect{fill:#fff3c4;stroke:#b58900;stroke-width:1.6}
-body.focus .asm-bundle:not(.sel){opacity:.45}
-h2 a.up{font:400 11px ui-monospace,monospace;margin-left:.6em;color:#3b5b8c}
 .island.stacked .split{display:none}
 .island.stacked .kit{position:static;max-height:none}
 .kitpos{font:11px ui-monospace;padding:1px 8px;margin-left:10px;
@@ -2380,6 +2167,9 @@ body.hide-lead svg .wire[data-kind="lead"]{display:none}
 body.hide-lead .krow[data-kind="lead"]{display:none}
 body.hide-interlink svg .wire[data-kind="interlink"]{display:none}
 body.hide-interlink .krow[data-kind="interlink"]{display:none}
+.uvref{font:600 9px ui-monospace,monospace;fill:#6b6455}
+.uvnote{font:12px ui-sans-serif,system-ui;color:#4a463d;max-width:46ch}
+body.hide-bot svg .uv{display:none}
 body.hide-top svg .seg-top{display:none}
 body.hide-bot svg .seg-bot{display:none}
 svg .seg-bot{opacity:.4}
@@ -2657,27 +2447,6 @@ JS = """
   });
   let last = null;
   document.addEventListener('click', function (e) {
-    // a bundle tag selects every wire between two boards; a click on
-    // one wire then narrows to it (the normal path below)
-    const bt = e.target.closest('.asm-bundle');
-    if (bt) {
-      const ws = new Set(JSON.parse(bt.getAttribute('data-ws')));
-      const id = 'bundle:' + bt.getAttribute('data-ws');
-      document.querySelectorAll('.sel').forEach(
-        el => el.classList.remove('sel'));
-      if (id !== last) {
-        document.querySelectorAll('.wire, .krow').forEach(el => {
-          if (ws.has(el.getAttribute('data-w'))) el.classList.add('sel');
-        });
-        bt.classList.add('sel');
-        document.body.classList.add('focus');
-        last = id;
-      } else {
-        document.body.classList.remove('focus');
-        last = null;
-      }
-      return;
-    }
     const g = e.target.closest('.wire, .krow');
     const key = g ? g.getAttribute('data-w') : null;
     document.querySelectorAll('.sel').forEach(
@@ -2898,10 +2667,6 @@ JS = """
 """
 
 
-_UP = (' <a class="up" href="#top" title="back to the assembly view">'
-       '↑ assembly</a>')
-
-
 def _section(title, board_svg, kit_html):
     return (f'<section class="island"><h2>{title}</h2>'
             f'<div class="board">{board_svg}</div>'
@@ -2909,8 +2674,18 @@ def _section(title, board_svg, kit_html):
             f'<div class="kit">{kit_html}</div></section>')
 
 
+def _underside_section(island, wires, lattice, rail_tints, alias=None):
+    """The turned-over view of a `wiring: underside` board, placed
+    straight under its upright sheet."""
+    return _section(
+        f'{esc(island.name)} <span class="sub">— underside, as turned '
+        'over on its hinge</span>',
+        underside_view(island, wires, lattice, rail_tints, alias),
+        underside_note(island))
+
+
 def render_html(islands, design=None, rules=None, panels=(), colours=None,
-                title=None, rails=(), label_offsets=None):
+                title=None, label_offsets=None):
     """The whole build sheet. `label_offsets` ({label id: (dx, dy)}, the
     `offsets:` of labels.yaml) nudges hand-dragged labels; None or {}
     renders exactly as before any label was moved."""
@@ -2920,7 +2695,7 @@ def render_html(islands, design=None, rules=None, panels=(), colours=None,
     rail_tints = dict(DEFAULT_RAIL_TINTS,
                       **((colours or {}).get("rail_tints") or {}))
     heading = title or "Breadboard layout — routed build sheet"
-    routed = route_design(islands, design, rules, panels, rails)
+    routed = route_design(islands, design, rules, panels)
     nets = NetView(design, rail_tints) if design is not None else None
     legend = "".join(
         f'<span><i style="background:{WIRE_COLOURS[c]}"></i>{c}</span>'
@@ -2929,22 +2704,6 @@ def render_html(islands, design=None, rules=None, panels=(), colours=None,
     blocks = []
     total_under = 0
     total_seam = 0
-    # the assembly view first: the whole box as it is mounted, each board
-    # turned the way its carrier holds it; the upright sheets below are
-    # where each board is built
-    for rail in rails or ():
-        svg, links, stubs = render_rail(rail, islands, routed, rail_tints)
-        note = f' <span class="sub">- {esc(rail.note)}</span>' \
-            if rail.note else ""
-        blocks.append(
-            f'<section class="island stacked assembly" id="asm-'
-            f'{island_anchor(rail.name)}"><h2>Assembly - {esc(rail.name)}'
-            f'{note} <span class="sub">(boards as carried: row 1 left, '
-            'column a down; click a name for its upright sheet)</span>'
-            f'</h2><div class="board">{svg}</div>'
-            f'<div class="kit">{assembly_table(rail, links, stubs, routed)}'
-            '</div></section>')
-    on_rail = bool(rails)
     # panels first — the boards that sit together on the bench read as
     # one build sheet; then whatever islands stand alone
     for panel in panels or ():
@@ -2962,9 +2721,16 @@ def render_html(islands, design=None, rules=None, panels=(), colours=None,
                           for n in panel.islands)
         blocks.append(_section(
             f'{anchors}{esc(panel.name)}{note} <span class="sub">'
-            f'[{esc(" | ".join(panel.islands))}]</span>'
-            + (_UP if on_rail else ""),
+            f'[{esc(" | ".join(panel.islands))}]</span>',
             svg, "".join(kit)))
+        for name in panel.islands:
+            if getattr(islands[name], "wiring", "top") == "underside":
+                wires, _stats, lattice = routed[name]
+                alias = {hw.key: a[1].key for a, b in links.values()
+                         for (n, hw) in (a, b) if n == name}
+                blocks.append(_underside_section(islands[name], wires,
+                                                 lattice, rail_tints,
+                                                 alias))
     grouped = {n for p in (panels or ()) for n in p.islands}
     for name in sorted(islands):
         if name in grouped:
@@ -2972,11 +2738,13 @@ def render_html(islands, design=None, rules=None, panels=(), colours=None,
         wires, stats, lattice = routed[name]
         total_under += stats.underside
         blocks.append(_section(
-            f'<span id="{island_anchor(name)}"></span>{esc(name)}'
-            + (_UP if on_rail else ""),
+            f'<span id="{island_anchor(name)}"></span>{esc(name)}',
             render_island(islands[name], wires, stats, lattice, rail_tints,
                           label_offsets, nets),
             kitting_table(islands[name], wires, lattice)))
+        if getattr(islands[name], "wiring", "top") == "underside":
+            blocks.append(_underside_section(islands[name], wires,
+                                             lattice, rail_tints))
     law = ("full pipe = focused layer · translucent pipe = the other "
            "layer (KiCad-style; the focus radio flips which, the "
            "front/back checkboxes hide) · ⊙ = dive to the underside, "

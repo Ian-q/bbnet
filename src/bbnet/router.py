@@ -14,6 +14,11 @@ spirit of a PCB autorouter mapped onto solderable-breadboard reality:
   whole body hangs in free air below the board, competing for nothing.
   A TOP-blocked jumper therefore becomes an end-to-end underside run,
   and `underside: true` declares one explicitly.
+- A `wiring: underside` island (clean top, messy bottom) skips the top
+  layer for wiring altogether: every jumper, lead and interlink is an
+  end-to-end underside run, free to cross any other, and the top face
+  carries parts only. Its ends go to the free holes of their nodes
+  nearest each other (a hole under a part body is fine from beneath).
 - Leads and interlinks fly OFF the board through the air — they are
   never lattice-routed; each is a straight run from its terminal hole
   to its exit edge (the renderer adds arrow / ghost-bus symbology).
@@ -196,7 +201,7 @@ def _local(addr):
 
 class _IslandRouter:
     def __init__(self, island: Island, remote_stubs, net_ctx=None,
-                 pair_side=None, rail_side=None, link_side=None):
+                 pair_side=None):
         self.isl = island
         self.lat = Lattice(island)
         # net context (from the derived Design): endpoint -> nid,
@@ -204,12 +209,10 @@ class _IslandRouter:
         self.net_ctx = net_ctx or _NetCtx()
         # panel-mate island -> "L"/"R": which edge that board sits past
         self.pair_side = pair_side or {}
-        # the island's rail channel ("L"/"R"), which beats pair_side for
-        # every interlink half on this board; None = no channel rail
-        self.rail_side = rail_side
-        # interlink id -> "L"/"R" on a split rail, which beats both
-        self.link_side = link_side or {}
         self._build_occupancy()
+        # holes already taken by an underside run's end on this island
+        # (wiring: underside), so the next run lands beside it
+        self._under_used = set()
         self.wires = self._collect_wires(remote_stubs)
         self.landings = self._scan_landings(remote_stubs)
 
@@ -448,6 +451,68 @@ class _IslandRouter:
                     if lat.board.has_rail_hole(y)], set()
         return [], set()
 
+    @property
+    def _loose(self):
+        """Clean top, messy bottom (`wiring: underside`)."""
+        return getattr(self.isl, "wiring", "top") == "underside"
+
+    def _under_cells(self, ep):
+        """Every hole an underside run could solder this endpoint to.
+
+        From beneath, a hole under a part body is as good as an open one
+        (nothing on top is in the way), so a half-row offers all five of
+        its holes, not just the ones _halfrow_choices ranks clear from
+        above. An explicit hole stays exactly that hole."""
+        lat = self.lat
+        if isinstance(ep, PinRef):
+            for part in self.isl.parts:
+                if part.ref == ep.ref and ep.pin in part.pins:
+                    return self._under_cells(part.pins[ep.pin])
+            return self._terminal(ep)[0]
+        if isinstance(ep, HoleAddr) and not ep.hole:
+            holes = LEFT_HOLES if ep.half == "L" else RIGHT_HOLES
+            return [(lat.x_of(h), ep.row) for h in holes]
+        return self._terminal(ep)[0]
+
+    def _under_rank(self, cell):
+        """0 = a free hole · 1 = another underside run already ends
+        there · 2 = a leg (or a written wire end) is in it: a tack onto
+        that joint, legal on a solderable board but the last choice."""
+        if cell in self._under_used:
+            return 1
+        if cell in self.solder_cells:
+            return 2
+        return 0
+
+    def _under_pick(self, a_cells, b_cells):
+        """The two holes an underside run solders to: the best-ranked
+        pair, then the shortest, then the lowest cells (deterministic).
+        Claims both, so the next run on the same node lands beside it."""
+        (a, b) = min(
+            ((s, t) for s in a_cells for t in b_cells),
+            key=lambda st: (self._under_rank(st[0])
+                            + self._under_rank(st[1]),
+                            abs(st[0][0] - st[1][0])
+                            + abs(st[0][1] - st[1][1]),
+                            st))
+        self._under_used.update((a, b))
+        return a, b
+
+    def _under_exit(self, cells, side):
+        """One end of an underside run leaving the board: the best free
+        hole of the node, nearest its exit edge, and the edge cell level
+        with it. `side` None = whichever edge is nearer."""
+        lat = self.lat
+        xl, xr = lat.x_of("edgeL"), lat.x_of("edgeR")
+        if side is None:
+            lo, hi = min(cells), max(cells)
+            side = "L" if (lo[0] - xl) <= (xr - hi[0]) else "R"
+        ex = xl if side == "L" else xr
+        a = min(cells, key=lambda c: (self._under_rank(c),
+                                      abs(c[0] - ex), c))
+        self._under_used.add(a)
+        return a, (ex, a[1])
+
     def _airwire(self, kind, colour, label, a_cell, b_cell,
                  link="", link_end="", anchor=""):
         """A wire whose body hangs beneath the board (underside: true):
@@ -490,31 +555,37 @@ class _IslandRouter:
         happens to reach for. DRC B13 turns these into instructions."""
         out = []
 
-        def check(ep, kind, label):
+        def check(ep, kind, label, under=False):
             if not isinstance(ep, HoleAddr) or ep.hole:
                 return
             (cell, rank) = self._halfrow_choices(ep)[0]
-            if rank:
+            # rank 1 (free only under a body) is what an underside run
+            # lands in anyway - only a fully-claimed node is news to it
+            if rank and not (under and rank == 1):
                 out.append((kind, label, ep.row, ep.half, rank,
                             self.lat.name(cell[0])))
 
         for j in self.isl.jumpers:
             if not j.offgrid:
                 label = f"{_local(j.a)}→{_local(j.b)}"
-                check(j.a, "jumper", label)
-                check(j.b, "jumper", label)
+                u = getattr(j, "underside", False)
+                check(j.a, "jumper", label, u)
+                check(j.b, "jumper", label, u)
         for j in self.isl.interlinks:
             if not j.offgrid:
-                check(j.a, "interlink", f"{_local(j.a)} ⇒ {j.b}")
+                check(j.a, "interlink", f"{_local(j.a)} ⇒ {j.b}",
+                      getattr(j, "underside", False))
         for w in self.isl.leads:
-            check(w.at, "lead", f"{_local(w.at)} · {w.label}")
-        for origin, text, _c, _p, _n, _u, _link, far in remote_stubs:
+            check(w.at, "lead", f"{_local(w.at)} · {w.label}",
+                  getattr(w, "underside", False))
+        for origin, text, _c, _p, _n, u, _link, far in remote_stubs:
             try:
                 ep = _parse_far(text, self.isl.name, self.isl.board,
                                  self.isl.rails)
             except Exception:
                 continue
-            check(ep, "interlink", f"{_local(ep)} ⇐ {origin}:{far}")
+            check(ep, "interlink", f"{_local(ep)} ⇐ {origin}:{far}",
+                  u or self._loose)
         return out
 
     def _collect_wires(self, remote_stubs):
@@ -540,7 +611,12 @@ class _IslandRouter:
             label = (f"{_local(j.a)}→{_local(j.b)}"
                      + (f" · {j.note}" if j.note else ""))
             if getattr(j, "underside", False):
-                self._airwire("jumper", j.colour, label, a[0], b[0])
+                if self._loose:
+                    a0, b0 = self._under_pick(self._under_cells(j.a),
+                                              self._under_cells(j.b))
+                else:
+                    a0, b0 = a[0], b[0]
+                self._airwire("jumper", j.colour, label, a0, b0)
                 continue
             add("jumper", a, b, j.colour, label, set(a) | set(b),
                 ctx.nid_of(self.isl.name, j.a), j.pair)
@@ -548,6 +624,15 @@ class _IslandRouter:
         for w in self.isl.leads:
             a, _ah = self._terminal(w.at)
             if not a:
+                continue
+            if getattr(w, "underside", False):
+                # leaves the board beneath it, from a free hole of its
+                # node, at whichever edge is nearer
+                a0, e = self._under_exit(self._under_cells(w.at)
+                                         if self._loose else a[:1], None)
+                self._airwire("lead", w.colour,
+                              f"{_local(w.at)} · {w.label}", a0, e,
+                              anchor=_local(w.at))
                 continue
             self._flywire("lead", w.colour,
                           f"{_local(w.at)} · {w.label}", a, None,
@@ -560,14 +645,18 @@ class _IslandRouter:
             if not a or not isinstance(j.b, XIsland):
                 continue
             link = f"{self.isl.name}#{idx}"
-            side = (self.link_side.get(link) or self.rail_side
-                    or self.pair_side.get(j.b.island))
+            side = self.pair_side.get(j.b.island)
             label = f"{_local(j.a)} ⇒ {j.b}"
             if getattr(j, "underside", False):
-                ex = self.lat.x_of("edgeR" if side != "L" else "edgeL")
+                if self._loose:
+                    a0, e = self._under_exit(self._under_cells(j.a),
+                                             side)
+                else:
+                    ex = self.lat.x_of("edgeR" if side != "L"
+                                       else "edgeL")
+                    a0, e = a[0], (ex, a[0][1])
                 self._airwire("interlink", j.colour, label,
-                              a[0], (ex, a[0][1]), link, "a",
-                              anchor=_local(j.a))
+                              a0, e, link, "a", anchor=_local(j.a))
                 continue
             self._flywire("interlink", j.colour, label, a, side, link, "a",
                           anchor=_local(j.a))
@@ -582,17 +671,22 @@ class _IslandRouter:
             a, _ah = self._terminal(ep)
             if not a:
                 continue
-            side = (self.link_side.get(link) or self.rail_side
-                    or self.pair_side.get(origin))
+            side = self.pair_side.get(origin)
             # name the far END, not just its board: `2b ⇐ pwr-dist:
             # DIST.V1-` says which screw, the way the near half's
             # `⇒ teensy-pwr:2b` already does
             label = f"{_local(ep)} ⇐ {origin}:{far}"
-            if under:
-                ex = self.lat.x_of("edgeR" if side != "L" else "edgeL")
+            if under or self._loose:
+                # the far half of an underside interlink, or any half
+                # landing on a clean-top board: beneath it either way
+                if self._loose:
+                    a0, e = self._under_exit(self._under_cells(ep), side)
+                else:
+                    ex = self.lat.x_of("edgeR" if side != "L"
+                                       else "edgeL")
+                    a0, e = a[0], (ex, a[0][1])
                 self._airwire("interlink", colour, label,
-                              a[0], (ex, a[0][1]), link, "b",
-                              anchor=_local(ep))
+                              a0, e, link, "b", anchor=_local(ep))
                 continue
             self._flywire("interlink", colour, label, a, side, link, "b",
                           anchor=_local(ep))
@@ -947,8 +1041,7 @@ class _NetCtx:
         return self._dom_cache[nid]
 
 
-def route_design(islands: dict, design=None, rules=None, panels=(),
-                 rails=()):
+def route_design(islands: dict, design=None, rules=None, panels=()):
     """Route every island; returns {name: (wires, stats, lattice)}.
 
     With a derived Design (and optional rules with a `domains:` list),
@@ -956,11 +1049,7 @@ def route_design(islands: dict, design=None, rules=None, panels=(),
     pairs and wires whose nets match different `domains:` classes keep
     out of each other's shadow. `panels` (layout.yaml) fixes the exit
     edge for islands that sit side by side, so the two halves of a
-    cross-board wire run toward each other and meet at the seam.
-    `rails` with a `channel:` override that: every interlink half on
-    one of their boards leaves by the channel's edge - or, on a
-    `split:` rail, a wire with both ends on that rail leaves by the
-    edge nearer its two ends."""
+    cross-board wire run toward each other and meet at the seam."""
     ctx = _NetCtx(design, rules)
     sides = defaultdict(dict)
     for p in panels or ():
@@ -968,9 +1057,6 @@ def route_design(islands: dict, design=None, rules=None, panels=(),
             for other in p.islands:
                 if other != mine:
                     sides[mine][other] = p.side_of(mine, other)
-    rail_side = {m: r.exit_side for r in rails or () if r.exit_side
-                 for m in r.islands}
-    link_side = _split_sides(islands, rails)
     stubs = defaultdict(list)
     for isl in islands.values():
         for idx, j in enumerate(isl.interlinks):
@@ -987,74 +1073,8 @@ def route_design(islands: dict, design=None, rules=None, panels=(),
         r = _IslandRouter(islands[name], sorted(
             stubs.get(name, []),
             key=lambda t: (t[0], t[1], t[2], t[3] or "")), ctx,
-            sides.get(name), rail_side.get(name), link_side)
+            sides.get(name))
         out[name] = r.route()
-    return out
-
-
-def _edge_dist(isl, ep, lat):
-    """(columns to edgeL, columns to edgeR) for an interlink end, or
-    None where it cannot be placed. A bare half-row counts from the
-    hole of that half nearest each edge."""
-    if isinstance(ep, PinRef):
-        for part in isl.parts:
-            if part.ref != ep.ref:
-                continue
-            if ep.pin in part.pins:
-                return _edge_dist(isl, part.pins[ep.pin], lat)
-            if ep.pin in part.terms:
-                x = lat.x_of(part.terms[ep.pin].hole)
-                return x - lat.x_of("edgeL"), lat.x_of("edgeR") - x
-        return None
-    xl, xr = lat.x_of("edgeL"), lat.x_of("edgeR")
-    if isinstance(ep, HoleAddr):
-        if ep.hole:
-            x = lat.x_of(ep.hole)
-            return x - xl, xr - x
-        cols = LEFT_HOLES if ep.half == "L" else RIGHT_HOLES
-        return lat.x_of(cols[0]) - xl, xr - lat.x_of(cols[-1])
-    if isinstance(ep, RailAddr):
-        x = lat.x_of(f"rail:{ep.strip}")
-        return x - xl, xr - x
-    return None
-
-
-def _split_sides(islands, rails):
-    """{interlink id: 'L'/'R'} for every wire with both ends on one
-    `split:` rail: the edge with the shorter total fly over the two
-    boards, the rail's own channel on a tie."""
-    out = {}
-    for rail in rails or ():
-        if not (rail.split and rail.exit_side):
-            continue
-        on = set(rail.islands)
-        lats = {}
-        for name in rail.islands:
-            if name in islands:
-                lats[name] = Lattice(islands[name])
-        for name in rail.islands:
-            isl = islands.get(name)
-            if isl is None:
-                continue
-            for idx, j in enumerate(isl.interlinks):
-                if (getattr(j, "offgrid", False)
-                        or not isinstance(j.b, XIsland)
-                        or j.b.island not in on
-                        or j.b.island not in islands):
-                    continue
-                far = islands[j.b.island]
-                try:
-                    ep = _parse_far(j.b.text, far.name, far.board,
-                                     far.rails)
-                except Exception:
-                    continue
-                da = _edge_dist(isl, j.a, lats[name])
-                db = _edge_dist(far, ep, lats[far.name])
-                if da is None or db is None:
-                    continue
-                left, right = da[0] + db[0], da[1] + db[1]
-                out[f"{name}#{idx}"] = (rail.exit_side if left == right
-                                        else "L" if left < right else "R")
     return out
 
 

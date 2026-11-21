@@ -133,9 +133,7 @@ def build(data_dir, route=True):
     routed = None
     if route:
         from bbnet import router
-        rails = model.rails_from(_yaml(data_dir / "layout.yaml") or {},
-                                 set(islands))
-        routed = router.route_design(islands, design, rules, panels, rails)
+        routed = router.route_design(islands, design, rules, panels)
     violations, todos = drc.run_all(design, rules, colours, routed)
     return design, violations, todos
 
@@ -332,10 +330,8 @@ def layout_html(data_dir):
     _parts, colours, rules, islands, pm, panels = load_data(data_dir)
     design = model.derive(islands, pm)
     layout = _yaml(data_dir / "layout.yaml") or {}
-    rails = model.rails_from(layout, set(islands))
     return render.render_html(islands, design, rules, panels,
                               colours=colours, title=layout.get("title"),
-                              rails=rails,
                               label_offsets=load_label_offsets(data_dir))
 
 
@@ -469,11 +465,9 @@ def cmd_score(data_dir, as_json=False):
     from bbnet import router, score
     _parts, colours, rules, islands, pm, panels = load_data(data_dir)
     design = model.derive(islands, pm)
-    rails = model.rails_from(_yaml(data_dir / "layout.yaml") or {},
-                             set(islands))
-    routed = router.route_design(islands, design, rules, panels, rails)
+    routed = router.route_design(islands, design, rules, panels)
     violations, _todos = drc.run_all(design, rules, colours, routed)
-    s = score.score(design, islands, routed, violations, rails)
+    s = score.score(design, islands, routed, violations)
     if as_json:
         print(json.dumps(s, indent=1))
     else:
