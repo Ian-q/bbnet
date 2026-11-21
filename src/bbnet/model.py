@@ -718,98 +718,18 @@ class Panel:
             else "L"
 
 
-# ---------------------------------------------------------------- rails
-
-DEFAULT_RAIL_GAP_PX = 36    # drawn space between two carriers on a rail
-
-
-@dataclass
-class Rail:
-    """One DIN rail (or any row of carriers), islands left-to-right as
-    mounted. Each board sits on it rotated 90 degrees counter-clockwise
-    from the upright build sheet: row 1 at the left, column a at the
-    bottom. A rail renders as the ASSEMBLY view - the boards as they
-    sit in the box, with the wires between them run down (or up) into a
-    channel, along it, and back into the far board.
-
-    `channel` ('below' / 'above', or None) is the side of the rail the
-    wiring duct runs on. Set, it DRIVES routing: every interlink half on
-    a board of this rail leaves by that long edge (below = the column-a
-    edge, above = the column-j edge), whatever panel the board is drawn
-    in - so no wire zig-zags through the gap between two carriers.
-    Unset, each half keeps the panel-facing / nearest edge.
-
-    `split` (needs a channel) runs a duct on BOTH long edges: a wire
-    with both ends on this rail takes whichever edge is nearer its two
-    ends, so a run between two column-a pins stays below instead of
-    flying across both boards. Wires to other rails keep `channel`."""
-    name: str
-    islands: list[str]
-    gap: int = DEFAULT_RAIL_GAP_PX
-    note: str = ""
-    channel: str | None = None
-    split: bool = False
-
-    @property
-    def exit_side(self):
-        """The upright edge ('L'/'R') the channel puts every half on."""
-        return {"below": "L", "above": "R"}.get(self.channel)
-
-
-def rails_from(d, island_names):
-    """layout.yaml `rails:` -> [Rail]. Optional: a project with no rails
-    simply gets no assembly view. An island may sit on at most one rail;
-    an island on no rail is left out of the assembly view, nothing
-    else."""
-    rails, home = [], {}
-    for i, r in enumerate((d or {}).get("rails") or []):
-        if not isinstance(r, dict):
-            raise ModelError(f"layout.yaml rail #{i + 1}: must be a "
-                             "mapping with name:/islands:")
-        name = str(r.get("name") or "").strip()
-        if not name:
-            raise ModelError(f"layout.yaml rail #{i + 1}: missing 'name:'")
-        if any(q.name == name for q in rails):
-            raise ModelError(f"layout.yaml: duplicate rail name {name!r}")
-        members = [str(x) for x in (r.get("islands") or [])]
-        if not members:
-            raise ModelError(f"layout.yaml rail {name!r}: no islands")
-        if len(set(members)) != len(members):
-            raise ModelError(f"layout.yaml rail {name!r}: island listed "
-                             "twice")
-        for m in members:
-            if m not in island_names:
-                raise ModelError(f"layout.yaml rail {name!r}: unknown "
-                                 f"island {m!r} (have "
-                                 f"{sorted(island_names)})")
-            if m in home:
-                raise ModelError(
-                    f"layout.yaml: island {m!r} is on two rails "
-                    f"({home[m]!r} and {name!r}) - a board sits in one "
-                    "place")
-            home[m] = name
-        gap = r.get("gap", DEFAULT_RAIL_GAP_PX)
-        if isinstance(gap, bool) or not isinstance(gap, int) or gap < 0:
-            raise ModelError(f"layout.yaml rail {name!r}: gap must be a "
-                             f"non-negative integer (px), got {gap!r}")
-        channel = r.get("channel")
-        if channel is not None and channel not in ("below", "above"):
-            raise ModelError(f"layout.yaml rail {name!r}: channel must be "
-                             f"'below' or 'above', got {channel!r}")
-        split = r.get("split", False)
-        if not isinstance(split, bool):
-            raise ModelError(f"layout.yaml rail {name!r}: split must be "
-                             f"true or false, got {split!r}")
-        if split and channel is None:
-            raise ModelError(f"layout.yaml rail {name!r}: split needs a "
-                             "channel: (the duct for wires to other rails)")
-        rails.append(Rail(name, members, gap, str(r.get("note", "")),
-                          channel, split))
-    return rails
-
-
 def panels_from(d, island_names):
     """layout.yaml -> [Panel]. Islands named by no panel render alone."""
+    d = d or {}
+    if d.get("rails"):
+        # The DIN-rail assembly view and its channel-driven routing were
+        # removed. A `channel:` used to decide which edge every interlink
+        # left by, so ignoring the block would silently re-route the
+        # boards: refuse it instead (raise for contracts).
+        raise ModelError(
+            "layout.yaml: `rails:` (the DIN-rail assembly view and its "
+            "channel:/split: routing) is no longer supported - delete the "
+            "block; boards that sit side by side are a `panels:` entry")
     panels, home = [], {}
     for i, p in enumerate(d.get("panels") or []):
         if not isinstance(p, dict):

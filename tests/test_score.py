@@ -100,4 +100,4 @@ def test_score_command_runs(capsys):
     assert bbnet.main(["score", "--data-dir", str(FIXTURES)]) == 0
     out = capsys.readouterr().out
     assert out.startswith("fingerprint ")
-    assert "rail 'Demo rail'" in out
+    assert "demo-left" in out

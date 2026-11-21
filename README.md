@@ -115,27 +115,9 @@ version the test suite itself uses.
   cap-polarity and voltage-rating checks (B10/B11).
 - **`layout.yaml`** — panels: boards that sit side by side on the bench
   and render as one stitched build sheet, with cross-board interlinks
-  drawn once across the seam rather than twice as ghost stubs. Optional
-  **`rails:`** (`name`, `islands` left to right, `gap` px, `note`) adds
-  an **assembly view** at the top of the sheet: each board turned 90°
-  counter-clockwise the way a DIN-rail carrier holds it (row 1 left,
-  column a down), side by side in mounting order, with every wire
-  between two rail-mates drawn out over the board's long edge, along a
-  channel above or below the rail, and back in. Wires to a board on no
-  rail or another rail end in a labelled dashed stub. Each board's name
-  links to its upright sheet, which stays the view a board is built
-  from. A rail's optional **`channel: below|above`** is the side its
-  wiring duct runs on, and it DRIVES routing: every interlink half on
-  that rail's boards leaves by that long edge (below = column a, above =
-  column j), overriding the panel's facing edges, so no wire threads
-  the gap between two carriers. A panel then draws whole only the wires
-  whose halves still face each other; the rest keep labelled stubs.
-  Without `channel:`, rails only draw.
-- **`split: true`** on a rail (needs `channel:`) runs a duct along BOTH
-  long edges. A wire with both ends on that rail takes whichever edge is
-  nearer its two ends (fewest columns flown over the two boards; a tie
-  keeps `channel`), so a run between two column-a pins stays below
-  instead of crossing both boards. Wires to other rails keep `channel`.
+  drawn once across the seam rather than twice as ghost stubs. (The
+  DIN-rail `rails:` block and its assembly view were removed; a
+  layout.yaml that still has one is refused, so delete it.)
 - **`frozen: <reason>`** on an island marks a board that must not be
   re-laid-out (typically: already built). Advisory: `bbnet score` lists
   it and the layout review leaves it alone.
@@ -146,7 +128,7 @@ version the test suite itself uses.
 every position stripped out (which pins, leads and seeded nets share a
 net; a non-polar passive's ends are interchangeable) and the metrics
 that make a sheet hard to build, in rank order: DRC errors, routing
-failures, gap crossings on a rail, underside runs, DRC warnings,
+failures, underside runs, DRC warnings,
 in-node detours, `fly_cols` (how far off-board wires fly over their own
 board to an edge), wire count, cut length. A re-layout that keeps the
 fingerprint is the same circuit; one that lowers the rank is tidier.
