@@ -77,8 +77,12 @@ def island_metrics(name, island, routed, violations):
     return {
         "island": name,
         "frozen": island.frozen,
+        "wiring": getattr(island, "wiring", "top"),
         "route_failures": stats.failed,
-        "underside": sum(1 for w in mine if w.underside),
+        # a forced underside run is a cost; on a `wiring: underside`
+        # board every run is underneath by design, so none counts
+        "underside": (0 if getattr(island, "wiring", "top") == "underside"
+                      else sum(1 for w in mine if w.underside)),
         "warnings": sum(1 for v in violations
                         if v.severity == "warning" and tag in v.message),
         "in_node_runs": len(in_node_runs(mine, lattice)),
@@ -119,5 +123,7 @@ def format_text(s):
     for i in s["islands"]:
         out.append(f"{i['island']:<20} "
                    + " ".join(f"{i[c]:>8}" for c in cols)
+                   + ("  WIRED UNDERSIDE" if i["wiring"] == "underside"
+                      else "")
                    + (f"  FROZEN: {i['frozen']}" if i["frozen"] else ""))
     return "\n".join(out)

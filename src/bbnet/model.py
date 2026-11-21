@@ -637,6 +637,10 @@ class Lead:
     label: str
     island: str
     pair: str | None = None   # twisted-pair label — paired wires co-run
+    underside: bool = False   # soldered from beneath and leaves the
+                              # board under it (a `wiring: underside`
+                              # island's default) rather than rising
+                              # off the top face
 
 
 @dataclass
@@ -660,6 +664,19 @@ class Island:
     # reviewer (skills/bbnet-layout-review): typically a board already
     # built, whose holes are now fact rather than proposal.
     frozen: str = ""
+    # Where this board's wires live (`wiring:` in its YAML). "top" is the
+    # default: parts and wires share the top face and the autorouter
+    # lays every jumper flat in the hole grid, one wire per channel
+    # cell. "underside" is the clean-top / messy-bottom build: only
+    # parts on top, every wire soldered underneath as a loose
+    # point-to-point run that may cross any other, traced by hand with
+    # the board turned over on its hinge. See WIRING_MODES.
+    wiring: str = "top"
+    # How the board turns over to show its underside (`flip:`): "cols"
+    # (the default) about its long edge, like a page, so column j comes
+    # to the left; "rows" about its short edge, so row 1 goes to the
+    # bottom. Drives the mirrored bottom view only.
+    flip: str = "cols"
 
     def sockets(self):
         """(row, half, hole) -> set of levels reachable there.
@@ -1032,22 +1049,26 @@ def island_from(d, parts_lib):
         links.append(Link(ref, level, positions, connects, clipped,
                           name, stock, fab, str(lk.get("note", ""))))
 
+    wiring, flip = _wiring(name, d)
+    under = wiring == "underside"
     jumpers = [Jumper(ep(j["from"]), ep(j["to"]), str(j.get("colour", "")),
                       str(j.get("note", "")), name,
                       (str(j["pair"]) if j.get("pair") else None),
                       bool(j.get("offgrid", False)),
-                      bool(j.get("underside", False)))
+                      _underside(j, under, f"{name} jumper {j.get('from')}"))
                for j in d.get("jumpers") or []]
     leads = [Lead(ep(w["at"]), str(w.get("colour", "")),
                   (str(w["net"]) if w.get("net") else None),
                   str(w.get("label", "")), name,
-                  (str(w["pair"]) if w.get("pair") else None))
+                  (str(w["pair"]) if w.get("pair") else None),
+                  _underside(w, under, f"{name} lead {w.get('at')}"))
              for w in d.get("leads") or []]
     inter = [Jumper(ep(j["from"]), ep(j["to"]), str(j.get("colour", "")),
                     str(j.get("note", "")), name,
                     (str(j["pair"]) if j.get("pair") else None),
                     bool(j.get("offgrid", False)),
-                    bool(j.get("underside", False)))
+                    _underside(j, under,
+                               f"{name} interlink {j.get('from')}"))
              for j in d.get("interlinks") or []]
 
     rb = d.get("rails_bridged")
@@ -1055,7 +1076,37 @@ def island_from(d, parts_lib):
                   (bool(rb) if rb is not None else None),
                   parts, passives, jumpers, leads, inter,
                   [str(x) for x in (d.get("bench_only") or [])],
-                  sv, devices, risers, links, _frozen(name, d))
+                  sv, devices, risers, links, _frozen(name, d),
+                  wiring, flip)
+
+
+WIRING_MODES = ("top", "underside")
+FLIP_AXES = ("cols", "rows")
+
+
+def _wiring(name, d):
+    """`wiring:` / `flip:` -> (mode, axis), refused when misspelled: a
+    typo here would quietly route the whole board the other way."""
+    mode = d.get("wiring", "top")
+    if mode not in WIRING_MODES:
+        raise ModelError(f"{name}: wiring must be one of "
+                         f"{list(WIRING_MODES)}, got {mode!r}")
+    axis = d.get("flip", "cols")
+    if axis not in FLIP_AXES:
+        raise ModelError(f"{name}: flip must be one of {list(FLIP_AXES)} "
+                         f"(the edge the board turns over on), got "
+                         f"{axis!r}")
+    return mode, axis
+
+
+def _underside(spec, default, where):
+    """A wire's `underside:` - its own when written, else the island's
+    wiring default."""
+    v = spec.get("underside", default)
+    if not isinstance(v, bool):
+        raise ModelError(f"{where}: underside must be true or false, got "
+                         f"{v!r}")
+    return v
 
 
 def _frozen(name, d):

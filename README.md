@@ -118,6 +118,15 @@ version the test suite itself uses.
   drawn once across the seam rather than twice as ghost stubs. (The
   DIN-rail `rails:` block and its assembly view were removed; a
   layout.yaml that still has one is refused, so delete it.)
+- **`wiring: underside`** on an island is the clean-top, messy-bottom
+  build (solderable perfboard, parts on the top face only): every
+  jumper, lead and interlink becomes a loose point-to-point run soldered
+  underneath. Runs may cross and weave; nothing is routed in the hole
+  grid, and each end takes the free hole of its node nearest the other
+  end. A single wire opts back onto the top with `underside: false`. The
+  default, `wiring: top`, is the structured top-side routing as before.
+  `bbnet score` marks such an island `WIRED UNDERSIDE` and does not count
+  its runs as underside escapes. The circuit fingerprint does not change.
 - **`frozen: <reason>`** on an island marks a board that must not be
   re-laid-out (typically: already built). Advisory: `bbnet score` lists
   it and the layout review leaves it alone.
@@ -423,6 +432,17 @@ re-render:
 | nets | its net name (unnamed `N$` nets read `–`) | every node strip and rail is tinted by its net; click a tint to light that net on every board and name it in the dock |
 
 The choice is remembered per sheet in the browser.
+
+### The bottom view
+
+An island with `wiring: underside` gets a second drawing straight under
+its upright one (under its panel, if it is in one): the board as it
+looks turned over on its hinge, not an x-ray. `flip: cols` (the default)
+turns it about its long edge, so column `j` is on the left; `flip: rows`
+turns it about its short edge, so row 1 is at the bottom. Text stays
+readable. Copper strips, solder joints at every leg, ghosted part bodies
+and the loose runs are drawn; a click on a run lights the same wire in
+the upright view, whose **bot** layer still shows the x-ray.
 
 ## Moving labels
 

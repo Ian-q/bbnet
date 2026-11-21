@@ -106,6 +106,10 @@ far off-board wires fly across their own board to an edge) · `wires` ·
 `wire_mm` (cut length). Earlier beats later: one route failure fixed is
 worth more than any amount of cut length.
 
+An island marked `wiring: underside` is wired underneath on purpose (parts on
+top, loose runs below): its `underside` count is 0 and its runs are not
+escapes to remove. Do not suggest moving them onto the top.
+
 ## Report
 
 1. Before/after `totals` side by side, and the fingerprint (identical,

@@ -22,8 +22,9 @@ import html
 import re
 import zlib
 
-from bbnet.geometry import HoleAddr, RailAddr
-from bbnet.model import body_cover, dip_right_col, face_toward, pin_hole
+from bbnet.geometry import LEFT_HOLES, RIGHT_HOLES, HoleAddr, RailAddr
+from bbnet.model import (body_cover, body_holes, dip_right_col, face_toward,
+                         pin_hole)
 from bbnet.router import BOT, TOP, route_design
 
 # px geometry
@@ -1529,6 +1530,235 @@ def island_body(island, wires, stats, lattice, skip_links=(),
     return "\n".join(S), labels, px
 
 
+# ------------------------------------------------------- underside view
+#
+# A `wiring: underside` board (clean top, messy bottom) is built with
+# parts only on its top face and every wire soldered underneath, loose,
+# crossing wherever it likes. You trace a wire by turning the board over
+# on its hinge, so the sheet draws the bottom the way it then LOOKS -
+# mirrored, as if rotated by hand - not see-through from the top (that
+# x-ray stays in the upright view: its translucent pipes and the
+# front/back focus). Text is never mirrored; only positions are.
+
+class FlipPxMap(PxMap):
+    """A PxMap of the board turned over. `axis` "cols" turns it about its
+    long edge (like a page: column j comes to the left, rows stay put);
+    "rows" about its short edge (row 1 goes to the bottom, columns stay
+    put). Every layer that only asks the map for x/y draws mirrored for
+    free."""
+
+    def __init__(self, lattice, axis="cols"):
+        super().__init__(lattice)
+        self.axis = axis
+
+    def x(self, xi):
+        v = super().x(xi)
+        return round(self.width - v, 1) if self.axis == "cols" else v
+
+    def y(self, row):
+        if self.axis == "rows":
+            return super().y(self.lat.rows + 1 - row)
+        return super().y(row)
+
+
+UV_BOW_MIN, UV_BOW_MAX = 6.0, 26.0   # px a loose run bows off its chord
+
+
+def _uv_curve(key, x0, y0, x1, y1):
+    """A loose run as one gentle quadratic curve. Real underside wires
+    are cut long and lie slack, and a curve per wire keeps two that
+    cross from reading as one straight line; the bow's side and size are
+    keyed on the wire, so the sheet is reproducible."""
+    dx, dy = x1 - x0, y1 - y0
+    length = (dx * dx + dy * dy) ** 0.5
+    if length < 1:
+        return f"M {x0},{y0} L {x1},{y1}"
+    h = zlib.crc32(key.encode("utf-8"))
+    bow = min(max(length * 0.16, UV_BOW_MIN), UV_BOW_MAX)
+    bow *= (0.7 + 0.3 * ((h >> 3) % 4) / 3) * (1 if h & 1 else -1)
+    mx, my = (x0 + x1) / 2 - dy / length * bow, (y0 + y1) / 2 + dx / length * bow
+    return (f"M {x0},{y0} Q {round(mx, 1)},{round(my, 1)} "
+            f"{x1},{y1}")
+
+
+def _uv_strips(add, px, lattice):
+    """The copper you see from below: one strip per row-half (its five
+    holes are one node) under the hole dots."""
+    for r in range(1, lattice.rows + 1):
+        y = px.y(r)
+        for holes in (LEFT_HOLES, RIGHT_HOLES):
+            xs = [px.col_x(h) for h in holes]
+            x0, x1 = min(xs) - 5.5, max(xs) + 5.5
+            add(f'<rect x="{round(x0, 1)}" y="{round(y - 4.5, 1)}" '
+                f'width="{round(x1 - x0, 1)}" height="9" rx="4.5" '
+                f'fill="#d9b779" fill-opacity="0.28"/>')
+
+
+def _uv_legs(add, px, island):
+    """Every leg through the board, seen from below as its solder joint,
+    and every part body as a dashed ghost through the board with its ref
+    upright - the landmarks you find your place by on the underside."""
+    S = []
+    lat = px.lat
+
+    def joint(hole, row, title):
+        S.append(f'<circle cx="{px.col_x(hole)}" cy="{px.y(row)}" r="3.3" '
+                 f'fill="#9a9a96" stroke="#6b6b66" stroke-width="0.8">'
+                 f'<title>{esc(title)}</title></circle>')
+
+    def ghost(cells, ref, title):
+        if not cells:
+            return
+        xs = [px.col_x(h) for _r, h in cells]
+        ys = [px.y(r) for r, _h in cells]
+        x0, x1 = min(xs) - 6, max(xs) + 6
+        y0, y1 = min(ys) - 6, max(ys) + 6
+        S.append(f'<g class="lyr-part"><rect x="{round(x0, 1)}" '
+                 f'y="{round(y0, 1)}" width="{round(x1 - x0, 1)}" '
+                 f'height="{round(y1 - y0, 1)}" rx="3" fill="none" '
+                 f'stroke="#7a7263" stroke-width="1" '
+                 f'stroke-dasharray="4 3"><title>{esc(title)} (on the '
+                 f'top face)</title></rect>'
+                 f'<text x="{round((x0 + x1) / 2, 1)}" '
+                 f'y="{round(min(y0, y1) - 3, 1)}" class="uvref halo" '
+                 f'text-anchor="middle">{esc(ref)}</text></g>')
+
+    for part in island.parts:
+        cells = []
+        for pn, a in part.pins.items():
+            hole = pin_hole(part, a)
+            if hole is None or a.row > lat.rows:
+                continue
+            cells.append((a.row, hole))
+            joint(hole, a.row, f"{part.ref}.{pn}")
+        body = [(r, h) for r, h in body_holes(part) if r <= lat.rows]
+        ghost(cells + body, part.ref, f"{part.ref} {part.value}".strip())
+    for q, terms in island.terminal_groups():
+        cells = []
+        for t in terms:
+            a = t.addr
+            if isinstance(a, HoleAddr) and a.hole and a.row <= lat.rows:
+                cells.append((a.row, a.hole))
+                joint(a.hole, a.row, f"{q.ref}.{t.name}")
+        if len(cells) > 1:
+            ghost(cells, q.ref,
+                  f"{q.ref} {getattr(q, 'value', '')}".strip())
+    add('\n'.join(S))
+
+
+def _uv_wires(add, px, wires, lattice, rail_tints, island, alias=None):
+    """Each underside run as a loose curve between its two solder holes;
+    one that leaves the board runs to the edge it exits by and is named
+    outside it. Same `wire` groups and keys as the upright view, so a
+    click (here, there, or on a kitting row) isolates it in both;
+    `alias` maps the far half of a wire a panel draws whole across its
+    seam to the key that whole wire is drawn and kitted under."""
+    alias = alias or {}
+    labels = []
+    wants = []
+    cx_mid = px.width / 2
+    for w in wires:
+        if not w.underside or not w.path:
+            continue
+        bots = [c for c in w.path if c.layer == BOT]
+        if len(bots) < 2:
+            continue
+        a, b = bots[0], bots[-1]
+        colour = WIRE_COLOURS.get(w.colour, WIRE_COLOURS[""])
+        x0, y0 = px.x(a.x), px.y(a.y)
+        x1, y1 = px.x(b.x), px.y(b.y)
+        # a rail end lands on its strip's real hole height
+        if lattice.is_rail(a.x):
+            y0 = _rail_y(px, a.y)
+        if lattice.is_rail(b.x):
+            y1 = _rail_y(px, b.y)
+        title = f"{w.colour or '?'}: {w.label} — underside run"
+        add(f'<g class="wire" data-w="{esc(alias.get(w.key, w.key))}" '
+            f'data-kind="{esc(w.kind)}">')
+        add(f'<path class="uv" d="{_uv_curve(w.key, x0, y0, x1, y1)}" '
+            f'fill="none" stroke="{colour}" stroke-width="3.2" '
+            f'stroke-linecap="round"><title>{esc(title)}</title></path>')
+        for (cx, cy, c) in ((x0, y0, a), (x1, y1, b)):
+            if lattice.is_edge(c.x):
+                continue
+            add(f'<circle class="uv" cx="{cx}" cy="{cy}" r="3.6" '
+                f'fill="{colour}" stroke="#2b2b2b" stroke-width="0.9">'
+                f'<title>{esc(title)}</title></circle>')
+        add('</g>')
+        for (cx, cy, c) in ((x0, y0, a), (x1, y1, b)):
+            if lattice.is_edge(c.x):
+                wants.append(("R" if cx > cx_mid else "L", cy, w.label,
+                              cx))
+    last = {}
+    for side, want, text, ex in sorted(wants):
+        ly = max(want + 3, last.get(side, -1e9) + 10.5)
+        last[side] = ly
+        shown, full = _fit_label(text, MARGIN - 24)
+        if not shown:
+            continue
+        tip = f"<title>{esc(full)}</title>" if full else ""
+        if side == "R":
+            lx, anchor = ex + 10, ""
+        else:
+            lx, anchor = ex - 10, ' text-anchor="end"'
+        labels.append(f'<text x="{round(lx, 1)}" y="{round(ly, 1)}" '
+                      f'class="lead lyr-label halo"{anchor}>'
+                      f'{esc(shown)}{tip}</text>')
+    return labels, (max(last.values()) if last else 0)
+
+
+def underside_view(island, wires, lattice, rail_tints, alias=None):
+    """The board turned over on its hinge, as an <svg>: copper strips,
+    every leg's solder joint, part bodies ghosted through the board, and
+    the loose underside runs drawn solid. Mirrored about the long edge
+    (`flip: cols`, the default) or the short one (`flip: rows`)."""
+    axis = getattr(island, "flip", "cols")
+    px = FlipPxMap(lattice, axis)
+    S = []
+    add = S.append
+    bx0 = min(px.col_x("edgeL"), px.col_x("edgeR")) - EDGE_W / 2 + 4
+    bx1 = max(px.col_x("edgeL"), px.col_x("edgeR")) + EDGE_W / 2 - 4
+    add(f'<rect x="{bx0}" y="{HDR_BOARD}" width="{bx1-bx0}" '
+        f'height="{px.height+FTR_BOARD-HDR_BOARD}" rx="8" fill="#efe9dc" '
+        f'stroke="#c8c2b2"/>')
+    n = sum(1 for w in wires if w.underside)
+    turn = ("about its long edge: column j is on the LEFT now"
+            if axis == "cols" else
+            "about its short edge: row 1 is at the BOTTOM now")
+    add(f'<text x="{bx0+6}" y="{HDR_TITLE}" class="ttl">'
+        f'{esc(island.name)} — underside, board turned over  '
+        f'<tspan class="sub">({turn}; {n} loose runs)</tspan></text>')
+    _rail_bands(add, px, island, lattice, rail_tints)
+    _ravine_keepouts(add, px, island)
+    _uv_strips(add, px, lattice)
+    _hole_grid(add, px, lattice)
+    _column_letters(add, px, lattice)
+    _uv_legs(add, px, island)
+    labels, label_y = _uv_wires(add, px, wires, lattice, rail_tints, island,
+                                alias)
+    labels += _row_numbers(px, lattice)
+    height = max(px.height, round(label_y + 14, 1))
+    return (f'<svg class="uv-sheet" viewBox="0 0 {px.width} {height}" '
+            f'width="{px.width}" height="{height}" '
+            f'xmlns="http://www.w3.org/2000/svg">' + "\n".join(S) + "\n"
+            + "\n".join(labels) + "</svg>")
+
+
+def underside_note(island):
+    """The pane beside the underside view: how to read it."""
+    axis = getattr(island, "flip", "cols")
+    how = ("Turn the board over about its long edge, like a page"
+           if axis == "cols" else
+           "Turn the board over about its short edge")
+    return ('<p class="uvnote"><b>Seen from below.</b> ' + how
+            + ': this is what you see, so match it hole for hole. Grey '
+            'dots are the legs of the parts on top (dashed outlines); '
+            'every wire is soldered here, loose and free to cross. Hover '
+            'a wire for both ends; click it, or its kitting row above, '
+            'to isolate it in both views. The upright view above is the '
+            'x-ray: same wires, seen through the board.</p>')
+
+
 # ------------------------------------------------------------- panels
 
 def seam_links(panel, routed):
@@ -1937,6 +2167,9 @@ body.hide-lead svg .wire[data-kind="lead"]{display:none}
 body.hide-lead .krow[data-kind="lead"]{display:none}
 body.hide-interlink svg .wire[data-kind="interlink"]{display:none}
 body.hide-interlink .krow[data-kind="interlink"]{display:none}
+.uvref{font:600 9px ui-monospace,monospace;fill:#6b6455}
+.uvnote{font:12px ui-sans-serif,system-ui;color:#4a463d;max-width:46ch}
+body.hide-bot svg .uv{display:none}
 body.hide-top svg .seg-top{display:none}
 body.hide-bot svg .seg-bot{display:none}
 svg .seg-bot{opacity:.4}
@@ -2441,6 +2674,16 @@ def _section(title, board_svg, kit_html):
             f'<div class="kit">{kit_html}</div></section>')
 
 
+def _underside_section(island, wires, lattice, rail_tints, alias=None):
+    """The turned-over view of a `wiring: underside` board, placed
+    straight under its upright sheet."""
+    return _section(
+        f'{esc(island.name)} <span class="sub">— underside, as turned '
+        'over on its hinge</span>',
+        underside_view(island, wires, lattice, rail_tints, alias),
+        underside_note(island))
+
+
 def render_html(islands, design=None, rules=None, panels=(), colours=None,
                 title=None, label_offsets=None):
     """The whole build sheet. `label_offsets` ({label id: (dx, dy)}, the
@@ -2480,6 +2723,14 @@ def render_html(islands, design=None, rules=None, panels=(), colours=None,
             f'{anchors}{esc(panel.name)}{note} <span class="sub">'
             f'[{esc(" | ".join(panel.islands))}]</span>',
             svg, "".join(kit)))
+        for name in panel.islands:
+            if getattr(islands[name], "wiring", "top") == "underside":
+                wires, _stats, lattice = routed[name]
+                alias = {hw.key: a[1].key for a, b in links.values()
+                         for (n, hw) in (a, b) if n == name}
+                blocks.append(_underside_section(islands[name], wires,
+                                                 lattice, rail_tints,
+                                                 alias))
     grouped = {n for p in (panels or ()) for n in p.islands}
     for name in sorted(islands):
         if name in grouped:
@@ -2491,6 +2742,9 @@ def render_html(islands, design=None, rules=None, panels=(), colours=None,
             render_island(islands[name], wires, stats, lattice, rail_tints,
                           label_offsets, nets),
             kitting_table(islands[name], wires, lattice)))
+        if getattr(islands[name], "wiring", "top") == "underside":
+            blocks.append(_underside_section(islands[name], wires,
+                                             lattice, rail_tints))
     law = ("full pipe = focused layer · translucent pipe = the other "
            "layer (KiCad-style; the focus radio flips which, the "
            "front/back checkboxes hide) · ⊙ = dive to the underside, "
